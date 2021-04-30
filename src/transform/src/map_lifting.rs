@@ -496,11 +496,13 @@ impl LiteralLifting {
             .map(|(i, x)| (i, scalars[*x - input_arity].clone()))
             .collect();
 
+        let projection_input_arity = input_arity + scalars.len();
+
         if !scalars.is_empty() {
             *relation = relation.take_dangerous().map(scalars);
         }
 
-        Self::add_projection_if_needed(relation, input_arity, projection);
+        Self::add_projection_if_needed(relation, projection_input_arity, projection);
 
         literal_map
     }

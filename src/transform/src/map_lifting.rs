@@ -24,6 +24,7 @@ use std::collections::HashMap;
 
 use expr::{Id, JoinInputMapper, MirRelationExpr, MirScalarExpr};
 
+use itertools::Itertools;
 use repr::Row;
 
 use crate::TransformArgs;
@@ -457,9 +458,37 @@ impl LiteralLifting {
     fn add_permute(
         relation: &mut MirRelationExpr,
         input_arity: usize,
-        scalars: Vec<MirScalarExpr>,
-        projection: Vec<usize>,
+        mut scalars: Vec<MirScalarExpr>,
+        mut projection: Vec<usize>,
     ) -> LiteralMap {
+        // Remove scalars not referenced in the projection
+        if !scalars.is_empty() {
+            let mut used_scalars = projection
+                .iter()
+                .enumerate()
+                .filter(|(_, x)| **x >= input_arity)
+                .map(|(out_col, old_in_col)| (old_in_col - input_arity, out_col))
+                // group them to avoid adding duplicated literals
+                .into_group_map()
+                .drain()
+                .collect::<Vec<_>>();
+
+            if used_scalars.len() != scalars.len() {
+                used_scalars.sort();
+                // Discard literals that are not projected
+                scalars = used_scalars
+                    .iter()
+                    .map(|(old_in_col, _)| scalars[*old_in_col].clone())
+                    .collect::<Vec<_>>();
+                // Update the references to the literal in the projection
+                for (new_in_col, (_old_in_col, out_cols)) in used_scalars.iter().enumerate() {
+                    for out_col in out_cols {
+                        projection[*out_col] = input_arity + new_in_col;
+                    }
+                }
+            }
+        }
+
         let literal_map: LiteralMap = projection
             .iter()
             .enumerate()

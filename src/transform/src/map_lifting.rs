@@ -435,9 +435,36 @@ impl LiteralLifting {
                     .filter(|(i, x)| input_literals.iter().all(|m| m.get(i) == Some(x)))
                     .collect::<LiteralMap>();
 
-                // Put common literals at the end, adding a permute if needed
-                let input_arity = base.arity();
-                Self::materialize_literals(relation, input_arity, common_literals)
+                if !common_literals.is_empty() {
+                    // Add a projection discarding the literals on top of each branch
+                    let input_arity = base.arity();
+                    let reduced_projection = (0..input_arity)
+                        .filter(|x| !common_literals.contains_key(x))
+                        .collect::<Vec<_>>();
+                    let final_union_arity = reduced_projection.len();
+
+                    for input in inputs.iter_mut() {
+                        *input = input.take_dangerous().project(reduced_projection.clone());
+                    }
+
+                    **base = base.take_dangerous().project(reduced_projection);
+
+                    // Re-add the literals using a permute
+                    let mut literals = Vec::new();
+                    let mut projection = Vec::new();
+                    for i in 0..input_arity {
+                        if let Some(literal) = common_literals.get(&i) {
+                            projection.push(final_union_arity + literals.len());
+                            literals.push(literal.clone());
+                        } else {
+                            projection.push(projection.len());
+                        }
+                    }
+
+                    Self::add_permute(relation, final_union_arity, literals, projection)
+                } else {
+                    common_literals
+                }
             }
             MirRelationExpr::ArrangeBy { input, keys } => {
                 // TODO(frank): Not sure if this is the right behavior,
@@ -454,42 +481,6 @@ impl LiteralLifting {
                 }
                 literals
             }
-        }
-    }
-
-    /// Materialize literals
-    fn materialize_literals(
-        relation: &mut MirRelationExpr,
-        input_arity: usize,
-        mut literals: LiteralMap,
-    ) -> LiteralMap {
-        if !literals.is_empty() {
-            // Materialize literals
-            let mut literal_spec = literals
-                .drain()
-                .sorted()
-                .enumerate()
-                .map(|(new_pos, (old_pos, literal))| (old_pos, (new_pos + input_arity, literal)))
-                .collect::<HashMap<_, _>>();
-
-            let projection = (0..input_arity)
-                .map(|old_pos| {
-                    if let Some(&(new_pos, _)) = literal_spec.get(&old_pos) {
-                        new_pos
-                    } else {
-                        old_pos
-                    }
-                })
-                .collect();
-            let literals = literal_spec
-                .drain()
-                .sorted()
-                .map(|(_, (_, literal))| literal)
-                .collect();
-
-            Self::add_permute(relation, input_arity, literals, projection)
-        } else {
-            literals
         }
     }
 

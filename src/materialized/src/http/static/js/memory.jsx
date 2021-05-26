@@ -171,6 +171,7 @@ function Dataflows() {
 
             // Establish maps to and from ids, addresses, and names.
             const id_to_addr = Object.fromEntries(Object.entries(addrs).map(([id, addr]) => [id, addr]));
+            // console.log(id_to_addr);
             const id_to_name = Object.fromEntries(Object.entries(opers).map(([id, name]) => [id, name]));
             const addr_to_id = Object.fromEntries(Object.entries(opers).map(([id, name]) => [addrStr(id_to_addr[id]), id]));
             const max_record_count = Math.max.apply(Math, Object.values(records));
@@ -205,7 +206,7 @@ function Dataflows() {
 
             // console.log(scope_children);
 
-            console.log("RECORDS: ", records);
+            // console.log("RECORDS: ", records);
 
             // Meant to render the scope identifier by addr, and its children recursively.
             async function render_scope(addr) {
@@ -243,7 +244,7 @@ function Dataflows() {
                                 return `${id} [label="${id} : ${name}",shape=house,style=filled,color=green,fillcolor="#bbffbb"]`;
                             } else {
                                 let my_records = records["".concat(id)];
-                                console.log("records: ", my_records, " for ", id);
+                                // console.log("records: ", my_records, " for ", id);
                                 if (my_records != null) {
                                     return `${id} [label= "${id} : ${name} \n\t records : ${my_records}",style=filled,color=red,fillcolor="#ffbbbb"]`;
                                 } else {
@@ -260,7 +261,7 @@ function Dataflows() {
                         ${edges.join('\n')}
                         ${labels.join('\n')}
                     }`;
-                    console.log(dot);
+                    // console.log(dot);
                     let graph = await hpccWasm.graphviz.layout(dot, 'svg', 'dot');
                     return (
                         <div>
@@ -283,7 +284,7 @@ function Dataflows() {
             setPage(await render_scope(""));
         };
 
-        console.log("rendering");
+        // console.log("rendering");
         render().catch((error) => {
             console.log("ERROR", error);
             setError(error);
@@ -378,7 +379,11 @@ function makeAddrStr(addrs, id, other) {
 }
 
 function addrStr(addr) {
-  return addr.join(', ');
+    if (addr != null) {
+        return addr.join(', ');
+    } else {
+        return "asenac";
+    }
 }
 
 // dispNs displays ns nanoseconds in a human-readable string.

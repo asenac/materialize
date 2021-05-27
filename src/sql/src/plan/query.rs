@@ -1218,11 +1218,28 @@ fn plan_view_select(
     };
 
     // Step 1. Handle FROM clause, including joins.
-    let (mut relation_expr, from_scope) =
-        from.iter().fold(Ok(plan_join_identity(qcx)), |l, twj| {
-            let (left, left_scope) = l?;
-            plan_table_with_joins(qcx, left, left_scope, &JoinOperator::CrossJoin, twj)
-        })?;
+    let ((mut relation_expr, from_scope), _) = from.iter().fold(
+        Ok((plan_join_identity(qcx), qcx.clone())),
+        |l: Result<_, anyhow::Error>, twj| {
+            let ((left, left_scope), inner_qcx) = l?;
+            let (right, right_scope) = plan_table_with_joins(qcx, &inner_qcx, twj)?;
+            let right_qcx =
+                inner_qcx.derived_context(right_scope.clone(), &inner_qcx.relation_type(&right));
+            Ok((
+                plan_join_operator(
+                    &JoinOperator::CrossJoin,
+                    &right_qcx,
+                    left,
+                    left_scope,
+                    &right_qcx,
+                    right,
+                    right_scope,
+                    false,
+                )?,
+                right_qcx,
+            ))
+        },
+    )?;
 
     // Step 2. Handle WHERE clause.
     if let Some(selection) = &selection {
@@ -1672,22 +1689,28 @@ fn plan_order_by_or_distinct_expr(
 }
 
 fn plan_table_with_joins<'a>(
+    outer_qcx: &QueryContext,
     qcx: &QueryContext,
-    left: HirRelationExpr,
-    left_scope: Scope,
-    join_operator: &JoinOperator<Aug>,
     table_with_joins: &'a TableWithJoins<Aug>,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
-    let (mut left, mut left_scope) = plan_table_factor(
-        qcx,
-        left,
-        left_scope,
-        join_operator,
-        &table_with_joins.relation,
-    )?;
+    let mut inner_qcx = qcx.clone();
+    let (mut left, mut left_scope) = plan_table_factor(outer_qcx, qcx, &table_with_joins.relation)?;
+    inner_qcx = inner_qcx.derived_context(left_scope.clone(), &inner_qcx.relation_type(&left));
+
     for join in &table_with_joins.joins {
-        let (new_left, new_left_scope) =
-            plan_table_factor(qcx, left, left_scope, &join.join_operator, &join.relation)?;
+        let (right, right_scope) = plan_table_factor(outer_qcx, qcx, &join.relation)?;
+        inner_qcx =
+            inner_qcx.derived_context(right_scope.clone(), &inner_qcx.relation_type(&right));
+        let (new_left, new_left_scope) = plan_join_operator(
+            &join.join_operator,
+            &inner_qcx,
+            left,
+            left_scope,
+            &inner_qcx,
+            right,
+            right_scope,
+            join.relation.is_lateral(),
+        )?;
         left = new_left;
         left_scope = new_left_scope;
     }
@@ -1695,21 +1718,16 @@ fn plan_table_with_joins<'a>(
 }
 
 fn plan_table_factor(
-    left_qcx: &QueryContext,
-    left: HirRelationExpr,
-    left_scope: Scope,
-    join_operator: &JoinOperator<Aug>,
+    outer_qcx: &QueryContext,
+    qcx: &QueryContext,
     table_factor: &TableFactor<Aug>,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
-    let lateral = matches!(
-        table_factor,
-        TableFactor::Function { .. } | TableFactor::Derived { lateral: true, .. }
-    );
+    let lateral = table_factor.is_lateral();
 
     let qcx = if lateral {
-        Cow::Owned(left_qcx.derived_context(left_scope.clone(), &left_qcx.relation_type(&left)))
+        Cow::Borrowed(qcx)
     } else {
-        Cow::Borrowed(left_qcx)
+        Cow::Borrowed(outer_qcx)
     };
 
     let (expr, scope) = match table_factor {
@@ -1743,29 +1761,13 @@ fn plan_table_factor(
         }
 
         TableFactor::NestedJoin { join, alias } => {
-            let (identity, identity_scope) = plan_join_identity(&qcx);
-            let (expr, scope) = plan_table_with_joins(
-                &qcx,
-                identity,
-                identity_scope,
-                &JoinOperator::CrossJoin,
-                join,
-            )?;
+            let (expr, scope) = plan_table_with_joins(outer_qcx, &qcx, join)?;
             let scope = plan_table_alias(scope, alias.as_ref())?;
             (expr, scope)
         }
     };
 
-    plan_join_operator(
-        &join_operator,
-        left_qcx,
-        left,
-        left_scope,
-        &qcx,
-        expr,
-        scope,
-        lateral,
-    )
+    Ok((expr, scope))
 }
 
 fn plan_table_function(

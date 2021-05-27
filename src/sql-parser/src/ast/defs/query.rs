@@ -427,6 +427,15 @@ pub enum TableFactor<T: AstInfo> {
     },
 }
 
+impl<T: AstInfo> TableFactor<T> {
+    pub fn is_lateral(&self) -> bool {
+        matches!(
+            self,
+            TableFactor::Function { .. } | TableFactor::Derived { lateral: true, .. }
+        )
+    }
+}
+
 impl<T: AstInfo> AstDisplay for TableFactor<T> {
     fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
         match self {

@@ -1218,28 +1218,26 @@ fn plan_view_select(
     };
 
     // Step 1. Handle FROM clause, including joins.
-    let ((mut relation_expr, from_scope), _) = from.iter().fold(
-        Ok((plan_join_identity(qcx), qcx.clone())),
+    let (mut relation_expr, from_scope) = from.iter().fold(
+        Ok(plan_join_identity(qcx)),
         |l: Result<_, anyhow::Error>, twj| {
-            let ((left, left_scope), inner_qcx) = l?;
-            let (right, right_scope) = plan_table_with_joins(qcx, &inner_qcx, twj)?;
-            let right_qcx =
-                inner_qcx.derived_context(right_scope.clone(), &inner_qcx.relation_type(&right));
-            Ok((
-                plan_join_operator(
-                    &JoinOperator::CrossJoin,
-                    &right_qcx,
-                    left,
-                    left_scope,
-                    &right_qcx,
-                    right,
-                    right_scope,
-                    false,
-                )?,
-                right_qcx,
-            ))
+            let (left, left_scope) = l?;
+            let (right, right_scope) =
+                plan_table_with_joins(qcx, &left_scope, &qcx.relation_type(&left), twj)?;
+            plan_join_operator(
+                &JoinOperator::CrossJoin,
+                &qcx,
+                left,
+                left_scope,
+                right,
+                right_scope,
+                twj.relation.is_lateral(),
+            )
         },
     )?;
+
+    println!("{:#?}", relation_expr);
+    println!("{:#?}", from_scope);
 
     // Step 2. Handle WHERE clause.
     if let Some(selection) = &selection {
@@ -1689,24 +1687,34 @@ fn plan_order_by_or_distinct_expr(
 }
 
 fn plan_table_with_joins<'a>(
-    outer_qcx: &QueryContext,
     qcx: &QueryContext,
+    lateral_scope: &Scope,
+    lateral_relation_type: &RelationType,
     table_with_joins: &'a TableWithJoins<Aug>,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
-    let mut inner_qcx = qcx.clone();
-    let (mut left, mut left_scope) = plan_table_factor(outer_qcx, qcx, &table_with_joins.relation)?;
-    inner_qcx = inner_qcx.derived_context(left_scope.clone(), &inner_qcx.relation_type(&left));
+    // @todo asenac avoid cloning if there is no join
+    let mut lateral_scope = lateral_scope.clone();
+    let mut lateral_relation_type = lateral_relation_type.clone();
+    let (mut left, mut left_scope) = plan_table_factor(
+        qcx,
+        &lateral_scope,
+        &lateral_relation_type,
+        &table_with_joins.relation,
+    )?;
 
     for join in &table_with_joins.joins {
-        let (right, right_scope) = plan_table_factor(outer_qcx, qcx, &join.relation)?;
-        inner_qcx =
-            inner_qcx.derived_context(right_scope.clone(), &inner_qcx.relation_type(&right));
+        lateral_scope = lateral_scope.product(left_scope.clone());
+        lateral_relation_type
+            .column_types
+            .extend(qcx.relation_type(&left).column_types);
+
+        let (right, right_scope) =
+            plan_table_factor(qcx, &lateral_scope, &lateral_relation_type, &join.relation)?;
         let (new_left, new_left_scope) = plan_join_operator(
             &join.join_operator,
-            &inner_qcx,
+            &qcx,
             left,
             left_scope,
-            &inner_qcx,
             right,
             right_scope,
             join.relation.is_lateral(),
@@ -1718,16 +1726,17 @@ fn plan_table_with_joins<'a>(
 }
 
 fn plan_table_factor(
-    outer_qcx: &QueryContext,
     qcx: &QueryContext,
+    lateral_scope: &Scope,
+    lateral_relation_type: &RelationType,
     table_factor: &TableFactor<Aug>,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
     let lateral = table_factor.is_lateral();
 
     let qcx = if lateral {
-        Cow::Borrowed(qcx)
+        Cow::Owned(qcx.derived_context(lateral_scope.clone(), lateral_relation_type))
     } else {
-        Cow::Borrowed(outer_qcx)
+        Cow::Borrowed(qcx)
     };
 
     let (expr, scope) = match table_factor {
@@ -1761,7 +1770,11 @@ fn plan_table_factor(
         }
 
         TableFactor::NestedJoin { join, alias } => {
-            let (expr, scope) = plan_table_with_joins(outer_qcx, &qcx, join)?;
+            // TODO(asenac) Lateral join operands in the nested join must see the items
+            // in lateral scope
+            let (identity, identity_scope) = plan_join_identity(&qcx);
+            let (expr, scope) =
+                plan_table_with_joins(&qcx, &identity_scope, &qcx.relation_type(&identity), join)?;
             let scope = plan_table_alias(scope, alias.as_ref())?;
             (expr, scope)
         }
@@ -1988,10 +2001,9 @@ fn expand_select_item<'a>(
 #[allow(clippy::too_many_arguments)]
 fn plan_join_operator(
     operator: &JoinOperator<Aug>,
-    left_qcx: &QueryContext,
+    qcx: &QueryContext,
     left: HirRelationExpr,
     left_scope: Scope,
-    right_qcx: &QueryContext,
     right: HirRelationExpr,
     right_scope: Scope,
     lateral: bool,
@@ -1999,20 +2011,18 @@ fn plan_join_operator(
     match operator {
         JoinOperator::Inner(constraint) => plan_join_constraint(
             &constraint,
-            left_qcx,
+            qcx,
             left,
             left_scope,
-            right_qcx,
             right,
             right_scope,
             JoinKind::Inner { lateral },
         ),
         JoinOperator::LeftOuter(constraint) => plan_join_constraint(
             &constraint,
-            left_qcx,
+            qcx,
             left,
             left_scope,
-            right_qcx,
             right,
             right_scope,
             JoinKind::LeftOuter { lateral },
@@ -2023,10 +2033,9 @@ fn plan_join_operator(
             }
             plan_join_constraint(
                 &constraint,
-                left_qcx,
+                qcx,
                 left,
                 left_scope,
-                right_qcx,
                 right,
                 right_scope,
                 JoinKind::RightOuter,
@@ -2038,10 +2047,9 @@ fn plan_join_operator(
             }
             plan_join_constraint(
                 &constraint,
-                left_qcx,
+                qcx,
                 left,
                 left_scope,
-                right_qcx,
                 right,
                 right_scope,
                 JoinKind::FullOuter,
@@ -2074,10 +2082,9 @@ fn plan_join_operator(
 #[allow(clippy::too_many_arguments)]
 fn plan_join_constraint<'a>(
     constraint: &'a JoinConstraint<Aug>,
-    left_qcx: &QueryContext,
+    qcx: &QueryContext,
     left: HirRelationExpr,
     left_scope: Scope,
-    right_qcx: &QueryContext,
     right: HirRelationExpr,
     right_scope: Scope,
     kind: JoinKind,
@@ -2086,15 +2093,14 @@ fn plan_join_constraint<'a>(
         JoinConstraint::On(expr) => {
             let mut product_scope = left_scope.product(right_scope);
             let ecx = &ExprContext {
-                qcx: &right_qcx,
+                qcx: &qcx,
                 name: "ON clause",
                 scope: &product_scope,
                 relation_type: &RelationType::new(
-                    left_qcx
-                        .relation_type(&left)
+                    qcx.relation_type(&left)
                         .column_types
                         .into_iter()
-                        .chain(right_qcx.relation_type(&right).column_types)
+                        .chain(qcx.relation_type(&right).column_types)
                         .collect(),
                 ),
                 allow_aggregates: false,
@@ -2134,10 +2140,9 @@ fn plan_join_constraint<'a>(
                 .iter()
                 .map(|ident| normalize::column_name(ident.clone()))
                 .collect::<Vec<_>>(),
-            left_qcx,
+            qcx,
             left,
             left_scope,
-            right_qcx,
             right,
             right_scope,
             kind,
@@ -2158,10 +2163,9 @@ fn plan_join_constraint<'a>(
             }
             plan_using_constraint(
                 &column_names,
-                left_qcx,
+                qcx,
                 left,
                 left_scope,
-                right_qcx,
                 right,
                 right_scope,
                 kind,
@@ -2175,10 +2179,9 @@ fn plan_join_constraint<'a>(
 #[allow(clippy::too_many_arguments)]
 fn plan_using_constraint(
     column_names: &[ColumnName],
-    left_qcx: &QueryContext,
+    qcx: &QueryContext,
     left: HirRelationExpr,
     left_scope: Scope,
-    right_qcx: &QueryContext,
     right: HirRelationExpr,
     right_scope: Scope,
     kind: JoinKind,
@@ -2191,15 +2194,14 @@ fn plan_using_constraint(
     let mut both_scope = left_scope.clone().product(right_scope.clone());
 
     let ecx = &ExprContext {
-        qcx: &right_qcx,
+        qcx: &qcx,
         name: "USING clause",
         scope: &both_scope,
         relation_type: &RelationType::new(
-            left_qcx
-                .relation_type(&left)
+            qcx.relation_type(&left)
                 .column_types
                 .into_iter()
-                .chain(right_qcx.relation_type(&right).column_types)
+                .chain(qcx.relation_type(&right).column_types)
                 .collect(),
         ),
         allow_aggregates: false,

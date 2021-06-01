@@ -1221,7 +1221,19 @@ fn plan_view_select(
     let (mut relation_expr, from_scope) =
         from.iter().fold(Ok(plan_join_identity(qcx)), |l, twj| {
             let (left, left_scope) = l?;
-            plan_table_with_joins(qcx, left, left_scope, &JoinOperator::CrossJoin, twj)
+            let lateral_relation = qcx.relation_type(&left);
+            let (right, right_scope) =
+                plan_table_with_joins(qcx, &left_scope, &[lateral_relation], twj)?;
+
+            plan_join_operator(
+                &JoinOperator::CrossJoin,
+                qcx,
+                left,
+                left_scope,
+                &qcx,
+                right,
+                right_scope,
+            )
         })?;
 
     // Step 2. Handle WHERE clause.
@@ -1673,21 +1685,30 @@ fn plan_order_by_or_distinct_expr(
 
 fn plan_table_with_joins<'a>(
     qcx: &QueryContext,
-    left: HirRelationExpr,
-    left_scope: Scope,
-    join_operator: &JoinOperator<Aug>,
+    lateral_scope: &Scope,
+    lateral_relations: &[RelationType],
     table_with_joins: &'a TableWithJoins<Aug>,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
+    let (identity, identity_scope) = plan_join_identity(&qcx);
     let (mut left, mut left_scope) = plan_table_factor(
         qcx,
-        left,
-        left_scope,
-        join_operator,
+        identity,
+        identity_scope,
+        lateral_scope,
+        lateral_relations,
+        &JoinOperator::CrossJoin,
         &table_with_joins.relation,
     )?;
     for join in &table_with_joins.joins {
-        let (new_left, new_left_scope) =
-            plan_table_factor(qcx, left, left_scope, &join.join_operator, &join.relation)?;
+        let (new_left, new_left_scope) = plan_table_factor(
+            qcx,
+            left,
+            left_scope,
+            lateral_scope,
+            lateral_relations,
+            &join.join_operator,
+            &join.relation,
+        )?;
         left = new_left;
         left_scope = new_left_scope;
     }
@@ -1698,6 +1719,8 @@ fn plan_table_factor(
     left_qcx: &QueryContext,
     left: HirRelationExpr,
     left_scope: Scope,
+    lateral_scope: &Scope,
+    lateral_relations: &[RelationType],
     join_operator: &JoinOperator<Aug>,
     table_factor: &TableFactor<Aug>,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
@@ -1707,7 +1730,15 @@ fn plan_table_factor(
     );
 
     let qcx = if lateral {
-        Cow::Owned(left_qcx.derived_context(left_scope.clone(), &left_qcx.relation_type(&left)))
+        let lateral_relations = {
+            let mut v = lateral_relations.to_vec();
+            v.push(left_qcx.relation_type(&left));
+            v
+        };
+        Cow::Owned(left_qcx.derived_context(
+            lateral_scope.clone().product(left_scope.clone()),
+            &lateral_relations,
+        ))
     } else {
         Cow::Borrowed(left_qcx)
     };
@@ -1743,14 +1774,8 @@ fn plan_table_factor(
         }
 
         TableFactor::NestedJoin { join, alias } => {
-            let (identity, identity_scope) = plan_join_identity(&qcx);
-            let (expr, scope) = plan_table_with_joins(
-                &qcx,
-                identity,
-                identity_scope,
-                &JoinOperator::CrossJoin,
-                join,
-            )?;
+            let (expr, scope) =
+                plan_table_with_joins(&qcx, lateral_scope, lateral_relations, join)?;
             let scope = plan_table_alias(scope, alias.as_ref())?;
             (expr, scope)
         }
@@ -1764,7 +1789,6 @@ fn plan_table_factor(
         &qcx,
         expr,
         scope,
-        lateral,
     )
 }
 
@@ -1990,10 +2014,22 @@ fn plan_join_operator(
     left: HirRelationExpr,
     left_scope: Scope,
     right_qcx: &QueryContext,
-    right: HirRelationExpr,
+    mut right: HirRelationExpr,
     right_scope: Scope,
-    lateral: bool,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
+    let lateral = {
+        let mut correlated = false;
+        right.visit_columns(0, &mut |depth, col| {
+            if col.level > depth && col.level - depth == 1 {
+                correlated = true;
+            }
+        });
+        println!("{}", correlated);
+        println!("left {:#?}", left);
+        println!("right {:#?}", right);
+        correlated
+    };
+
     match operator {
         JoinOperator::Inner(constraint) => plan_join_constraint(
             &constraint,
@@ -3363,7 +3399,7 @@ impl<'a> QueryContext<'a> {
 
     /// Generate a new `QueryContext` appropriate to be used in subqueries of
     /// `self`.
-    fn derived_context(&self, scope: Scope, relation_type: &RelationType) -> QueryContext<'a> {
+    fn derived_context(&self, scope: Scope, relation_types: &[RelationType]) -> QueryContext<'a> {
         let mut ctes = self.ctes.clone();
         for (_, cte) in ctes.iter_mut() {
             cte.level_offset += 1;
@@ -3376,7 +3412,7 @@ impl<'a> QueryContext<'a> {
             outer_relation_types: self
                 .outer_relation_types
                 .iter()
-                .chain(std::iter::once(relation_type))
+                .chain(relation_types)
                 .cloned()
                 .collect(),
             ctes,
@@ -3489,7 +3525,7 @@ impl<'a> ExprContext<'a> {
 
     fn derived_query_context(&self) -> QueryContext {
         self.qcx
-            .derived_context(self.scope.clone(), self.relation_type)
+            .derived_context(self.scope.clone(), &[self.relation_type.clone()])
     }
 
     pub fn require_experimental_mode(&self, feature_name: &str) -> Result<(), anyhow::Error> {

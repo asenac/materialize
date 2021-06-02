@@ -102,6 +102,8 @@ pub struct Scope {
     pub items: Vec<ScopeItem>,
     // items inherited from an enclosing query
     pub outer_scope: Option<Box<Scope>>,
+    // the distance of the outer scope wrt the current scope
+    pub outer_scope_level_offset: usize,
 }
 
 impl ScopeItem {
@@ -151,6 +153,7 @@ impl Scope {
         Scope {
             items: vec![],
             outer_scope: outer_scope.map(Box::new),
+            outer_scope_level_offset: 1,
         }
     }
 
@@ -206,7 +209,7 @@ impl Scope {
             }
             if let Some(outer_scope) = &scope.outer_scope {
                 scope = outer_scope;
-                level += 1;
+                level += scope.outer_scope_level_offset;
             } else {
                 break;
             }
@@ -310,6 +313,7 @@ impl Scope {
                 .chain(right.items.into_iter())
                 .collect(),
             outer_scope: self.outer_scope,
+            outer_scope_level_offset: self.outer_scope_level_offset,
         }
     }
 
@@ -317,6 +321,7 @@ impl Scope {
         Scope {
             items: columns.iter().map(|&i| self.items[i].clone()).collect(),
             outer_scope: self.outer_scope.clone(),
+            outer_scope_level_offset: self.outer_scope_level_offset,
         }
     }
 }

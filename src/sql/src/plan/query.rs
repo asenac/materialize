@@ -1192,7 +1192,7 @@ struct SelectPlan {
 /// This function handles queries of the latter class. For queries of the
 /// former class, see `plan_view_select`.
 fn plan_view_select(
-    qcx: &QueryContext,
+    qcx: &mut QueryContext,
     s: &Select<Aug>,
     order_by_exprs: &[OrderByExpr<Aug>],
 ) -> Result<SelectPlan, anyhow::Error> {
@@ -1221,7 +1221,18 @@ fn plan_view_select(
     let (mut relation_expr, from_scope) =
         from.iter().fold(Ok(plan_join_identity(qcx)), |l, twj| {
             let (left, left_scope) = l?;
-            plan_table_with_joins(qcx, left, left_scope, &JoinOperator::CrossJoin, twj)
+            let lateral_qcx = qcx.derived_context(left_scope.clone(), &qcx.relation_type(&left));
+            let (right, right_scope) = plan_table_with_joins(qcx, &lateral_qcx, twj)?;
+
+            plan_join_operator(
+                &JoinOperator::CrossJoin,
+                qcx,
+                left,
+                left_scope,
+                &qcx,
+                right,
+                right_scope,
+            )
         })?;
 
     // Step 2. Handle WHERE clause.
@@ -1672,22 +1683,37 @@ fn plan_order_by_or_distinct_expr(
 }
 
 fn plan_table_with_joins<'a>(
-    qcx: &QueryContext,
-    left: HirRelationExpr,
-    left_scope: Scope,
-    join_operator: &JoinOperator<Aug>,
+    qcx: &mut QueryContext,
+    lateral_qcx: &QueryContext,
     table_with_joins: &'a TableWithJoins<Aug>,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
+    let (identity, identity_scope) = plan_join_identity(&qcx);
+    // The result of this function is a left-deep join tree, where each
+    // intermediate join introduces a new phantom scope only visible
+    // by lateral join operands. `outer_scope_offset_level` represents
+    // the distance from the scope of the current join to the outer
+    // scope.
+    let mut outer_scope_offset_level = table_with_joins.joins.len() + 1;
     let (mut left, mut left_scope) = plan_table_factor(
         qcx,
-        left,
-        left_scope,
-        join_operator,
+        lateral_qcx,
+        identity,
+        identity_scope,
+        &JoinOperator::CrossJoin,
         &table_with_joins.relation,
+        outer_scope_offset_level,
     )?;
     for join in &table_with_joins.joins {
-        let (new_left, new_left_scope) =
-            plan_table_factor(qcx, left, left_scope, &join.join_operator, &join.relation)?;
+        outer_scope_offset_level -= 1;
+        let (new_left, new_left_scope) = plan_table_factor(
+            qcx,
+            lateral_qcx,
+            left,
+            left_scope,
+            &join.join_operator,
+            &join.relation,
+            outer_scope_offset_level,
+        )?;
         left = new_left;
         left_scope = new_left_scope;
     }
@@ -1695,77 +1721,100 @@ fn plan_table_with_joins<'a>(
 }
 
 fn plan_table_factor(
-    left_qcx: &QueryContext,
+    left_qcx: &mut QueryContext,
+    lateral_qcx: &QueryContext,
     left: HirRelationExpr,
     left_scope: Scope,
     join_operator: &JoinOperator<Aug>,
     table_factor: &TableFactor<Aug>,
+    outer_scope_offset_level: usize,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
     let lateral = matches!(
         table_factor,
         TableFactor::Function { .. } | TableFactor::Derived { lateral: true, .. }
     );
 
-    let qcx = if lateral {
-        Cow::Owned(left_qcx.derived_context(left_scope.clone(), &left_qcx.relation_type(&left)))
-    } else {
-        Cow::Borrowed(left_qcx)
+    // Even if the current join operand is not a LATERAL one, we must create a
+    // lateral context to pass it down to nested joins.
+    // TODO(asenac) create the lateral scope only for Funciton, Derived{lateral}
+    // and NestedJoin.
+    let lateral_qcx = {
+        // A lateral join operand can see the items from its left sibiling as well
+        // as the left siblings from all its ancestors.
+        let lateral_scope = Scope {
+            items: left_scope.items.clone(),
+            outer_scope: Some(Box::new(lateral_qcx.outer_scope.clone())),
+            outer_scope_level_offset: 1, // TODO(asenac)
+        };
+        let relation_type = left_qcx.relation_type(&left);
+        lateral_qcx.derived_context(lateral_scope, &relation_type)
     };
 
-    let (expr, scope) = match table_factor {
-        TableFactor::Table { name, alias } => {
-            let (expr, scope) = qcx.resolve_table_name(name.clone())?;
-            let scope = plan_table_alias(scope, alias.as_ref())?;
-            (expr, scope)
-        }
+    // For non-lateral join operands, the lateral scope is a phantom scope
+    // between the current scope and the outer scope, so we need to set the
+    // distance with the outer scope properly.
+    let prev_offset = left_qcx.outer_scope.outer_scope_level_offset;
+    left_qcx.outer_scope.outer_scope_level_offset = outer_scope_offset_level;
 
-        TableFactor::Function { name, args, alias } => {
-            let ecx = &ExprContext {
-                qcx: &qcx,
-                name: "FROM table function",
-                scope: &Scope::empty(Some(qcx.outer_scope.clone())),
-                relation_type: &RelationType::empty(),
-                allow_aggregates: false,
-                allow_subqueries: true,
-            };
-            plan_table_function(ecx, &name, alias.as_ref(), args)?
-        }
+    // Scope guard to be able to reset the distance with the outer scope
+    // before leaving.
+    let result = {
+        // TODO(asenac) avoid cloning
+        let mut right_qcx = if lateral {
+            lateral_qcx.clone()
+        } else {
+            left_qcx.clone()
+        };
 
-        TableFactor::Derived {
-            lateral: _,
-            subquery,
-            alias,
-        } => {
-            let mut qcx = (*qcx).clone();
-            let (expr, scope) = plan_subquery(&mut qcx, &subquery)?;
-            let scope = plan_table_alias(scope, alias.as_ref())?;
-            (expr, scope)
-        }
+        let (expr, scope) = match table_factor {
+            TableFactor::Table { name, alias } => {
+                let (expr, scope) = right_qcx.resolve_table_name(name.clone())?;
+                let scope = plan_table_alias(scope, alias.as_ref())?;
+                (expr, scope)
+            }
 
-        TableFactor::NestedJoin { join, alias } => {
-            let (identity, identity_scope) = plan_join_identity(&qcx);
-            let (expr, scope) = plan_table_with_joins(
-                &qcx,
-                identity,
-                identity_scope,
-                &JoinOperator::CrossJoin,
-                join,
-            )?;
-            let scope = plan_table_alias(scope, alias.as_ref())?;
-            (expr, scope)
-        }
+            TableFactor::Function { name, args, alias } => {
+                let ecx = &ExprContext {
+                    qcx: &right_qcx,
+                    name: "FROM table function",
+                    scope: &Scope::empty(Some(right_qcx.outer_scope.clone())),
+                    relation_type: &RelationType::empty(),
+                    allow_aggregates: false,
+                    allow_subqueries: true,
+                };
+                plan_table_function(ecx, &name, alias.as_ref(), args)?
+            }
+
+            TableFactor::Derived {
+                lateral: _,
+                subquery,
+                alias,
+            } => {
+                let (expr, scope) = plan_subquery(&mut right_qcx, &subquery)?;
+                let scope = plan_table_alias(scope, alias.as_ref())?;
+                (expr, scope)
+            }
+
+            TableFactor::NestedJoin { join, alias } => {
+                let (expr, scope) = plan_table_with_joins(&mut right_qcx, &lateral_qcx, join)?;
+                let scope = plan_table_alias(scope, alias.as_ref())?;
+                (expr, scope)
+            }
+        };
+
+        plan_join_operator(
+            &join_operator,
+            left_qcx,
+            left,
+            left_scope,
+            &right_qcx,
+            expr,
+            scope,
+        )
     };
 
-    plan_join_operator(
-        &join_operator,
-        left_qcx,
-        left,
-        left_scope,
-        &qcx,
-        expr,
-        scope,
-        lateral,
-    )
+    left_qcx.outer_scope.outer_scope_level_offset = prev_offset;
+    result
 }
 
 fn plan_table_function(
@@ -1990,10 +2039,23 @@ fn plan_join_operator(
     left: HirRelationExpr,
     left_scope: Scope,
     right_qcx: &QueryContext,
-    right: HirRelationExpr,
+    mut right: HirRelationExpr,
     right_scope: Scope,
-    lateral: bool,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
+    let (lateral, uses_outer_scope) = {
+        let mut correlated = false;
+        let mut uses_outer_scope = false;
+        right.visit_columns(0, &mut |depth, col| {
+            if col.level > depth {
+                if col.level - depth == 1 {
+                    correlated = true;
+                }
+
+                uses_outer_scope = true;
+            }
+        });
+        (correlated, uses_outer_scope)
+    };
     match operator {
         JoinOperator::Inner(constraint) => plan_join_constraint(
             &constraint,
@@ -2052,7 +2114,7 @@ fn plan_join_operator(
             // column references in `right`, but it doesn't seem worth it just
             // to make the raw query plans nicer. The optimizer doesn't have
             // trouble with the extra join.)
-            let join = if left.is_join_identity() && !lateral {
+            let join = if left.is_join_identity() && !uses_outer_scope {
                 right
             } else if right.is_join_identity() {
                 left

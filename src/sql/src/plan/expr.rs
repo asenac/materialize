@@ -12,7 +12,6 @@
 //! similar to that file, with some differences which are noted below. It gets turned into that
 //! representation via a call to decorrelate().
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::mem;
@@ -516,12 +515,10 @@ impl HirRelationExpr {
                     let nullable = t.nullable || left_nullable;
                     t.nullable(nullable)
                 });
-                let outers = if kind.is_lateral() {
+                let outers = {
                     let mut outers = outers.to_vec();
                     outers.push(RelationType::new(lt.clone().collect()));
-                    Cow::Owned(outers)
-                } else {
-                    Cow::Borrowed(outers)
+                    outers
                 };
                 let rt = right
                     .typ(&outers, params)
@@ -853,13 +850,13 @@ impl HirRelationExpr {
     {
         match self {
             HirRelationExpr::Join {
-                kind,
+                kind: _,
                 on,
                 left,
                 right,
             } => {
                 left.visit_columns(depth, f);
-                let depth = if kind.is_lateral() { depth + 1 } else { depth };
+                let depth = depth + 1;
                 right.visit_columns(depth, f);
                 on.visit_columns(depth, f);
             }
@@ -963,13 +960,13 @@ impl HirRelationExpr {
     pub fn splice_parameters(&mut self, params: &[HirScalarExpr], depth: usize) {
         match self {
             HirRelationExpr::Join {
-                kind,
+                kind: _,
                 on,
                 left,
                 right,
             } => {
                 left.splice_parameters(params, depth);
-                let depth = if kind.is_lateral() { depth + 1 } else { depth };
+                let depth = depth + 1;
                 right.splice_parameters(params, depth);
                 on.splice_parameters(params, depth);
             }

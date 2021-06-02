@@ -314,7 +314,9 @@ impl HirRelationExpr {
                 let lt = left.typ();
                 let la = left.arity() - oa;
                 left.let_in(id_gen, |id_gen, get_left| {
-                    let right = right.applied_to(id_gen, get_outer.clone(), col_map);
+                    // Joins always create a new scope for their right-hand side
+                    let col_map = col_map.enter_scope(0);
+                    let right = right.applied_to(id_gen, get_outer.clone(), &col_map);
                     let rt = right.typ();
                     let ra = right.arity() - oa;
                     right.let_in(id_gen, |id_gen, get_right| {
@@ -329,7 +331,7 @@ impl HirRelationExpr {
                                 .collect(),
                         );
                         let old_arity = product.arity();
-                        let on = on.applied_to(id_gen, col_map, &mut product);
+                        let on = on.applied_to(id_gen, &col_map, &mut product);
 
                         // Attempt an efficient equijoin implementation, in which outer joins are
                         // more efficiently rendered than in general. This can return `None` if

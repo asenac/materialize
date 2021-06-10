@@ -1232,6 +1232,7 @@ fn plan_view_select(
                 &qcx,
                 right,
                 right_scope,
+                false,
             )
         })?;
 
@@ -1810,6 +1811,7 @@ fn plan_table_factor(
             &right_qcx,
             expr,
             scope,
+            lateral,
         )
     };
 
@@ -2041,8 +2043,9 @@ fn plan_join_operator(
     right_qcx: &QueryContext,
     mut right: HirRelationExpr,
     right_scope: Scope,
+    lateral: bool,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
-    let (lateral, uses_outer_scope) = {
+    let (uses_lateral_scope, uses_outer_scope) = {
         let mut correlated = false;
         let mut uses_outer_scope = false;
         right.visit_columns(0, &mut |depth, col| {
@@ -2065,7 +2068,9 @@ fn plan_join_operator(
             right_qcx,
             right,
             right_scope,
-            JoinKind::Inner { lateral },
+            JoinKind::Inner {
+                lateral: uses_lateral_scope,
+            },
         ),
         JoinOperator::LeftOuter(constraint) => plan_join_constraint(
             &constraint,
@@ -2075,7 +2080,9 @@ fn plan_join_operator(
             right_qcx,
             right,
             right_scope,
-            JoinKind::LeftOuter { lateral },
+            JoinKind::LeftOuter {
+                lateral: uses_lateral_scope,
+            },
         ),
         JoinOperator::RightOuter(constraint) => {
             if lateral {
@@ -2123,7 +2130,9 @@ fn plan_join_operator(
                     left: Box::new(left),
                     right: Box::new(right),
                     on: HirScalarExpr::literal_true(),
-                    kind: JoinKind::Inner { lateral },
+                    kind: JoinKind::Inner {
+                        lateral: uses_lateral_scope,
+                    },
                 }
             };
             Ok((join, left_scope.product(right_scope)))

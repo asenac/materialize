@@ -599,18 +599,15 @@ impl PredicatePushdown {
                         }
                     } else {
                         // Case 3: There are no literals in the equivalence
-                        // class. For each single-input expression `expr1`,
-                        // scan the remaining single-input expressions
-                        // to see if there is another expression `expr2` from
-                        // the same input. If there is, push down
-                        // `(expr1 = expr2) || (isnull(expr1) &&
-                        // isnull(expr2))`.
-                        // `expr1` can then be removed from the equivalence
-                        // class. Note that we keep `expr2` around so that the
-                        // join doesn't inadvertently become a cross join.
-                        // TODO(asenac) the comment above is no longer true.
+                        // class. Push a predicate for every pair of expressions
+                        // in the equivalence that etiher belong to a single
+                        // input or can be localized to a given input through
+                        // the rest of equivalences.
                         let mut to_remove = Vec::new();
                         for input in 0..inputs.len() {
+                            // Vector of pairs (position within the equivalence, localized
+                            // expression). The position is None for expressions derived through
+                            // other equivalences.
                             let localized = equivalences[equivalence_pos]
                                 .iter()
                                 .enumerate()
@@ -618,9 +615,21 @@ impl PredicatePushdown {
                                     if let MirScalarExpr::Column(col_pos) = &expr {
                                         let local_col = input_mapper.map_column_to_local(*col_pos);
                                         if input == local_col.1 {
-                                            return Some((pos, MirScalarExpr::Column(local_col.0)));
+                                            return Some((
+                                                Some(pos),
+                                                MirScalarExpr::Column(local_col.0),
+                                            ));
                                         } else {
                                             return None;
+                                        }
+                                    }
+                                    let mut inputs = input_mapper.lookup_inputs(expr);
+                                    if let Some(single_input) = inputs.next() {
+                                        if input == single_input && inputs.next().is_none() {
+                                            return Some((
+                                                Some(pos),
+                                                input_mapper.map_expr_to_local(expr.clone()),
+                                            ));
                                         }
                                     }
                                     // Equivalences not including the current expression
@@ -633,7 +642,7 @@ impl PredicatePushdown {
                                             &other_equivalences[..],
                                         )
                                     {
-                                        Some((pos, localized))
+                                        Some((None, localized))
                                     } else {
                                         None
                                     }
@@ -673,7 +682,18 @@ impl PredicatePushdown {
                                     });
                                 }
 
-                                to_remove.extend(localized.iter().map(|(pos, _)| *pos));
+                                if localized.len() == equivalences[equivalence_pos].len() {
+                                    // The equivalence is either a single input one or fully localizable
+                                    // to a single input through other equivalences, so it can be removed
+                                    // completely without introducing any new cross join.
+                                    to_remove.extend(localized.iter().filter_map(|(pos, _)| *pos));
+                                } else {
+                                    // Leave an expression from this input in the equivalence to avoid
+                                    // cross joins
+                                    to_remove.extend(
+                                        localized.iter().filter_map(|(pos, _)| *pos).skip(1),
+                                    );
+                                }
                             }
                         }
 

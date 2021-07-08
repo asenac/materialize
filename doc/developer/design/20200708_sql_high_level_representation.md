@@ -145,6 +145,10 @@ fewer cases. The rest are just constructions that don't make sense semantically 
 
 ### Examples
 
+This section includes examples of how some queries look like in QGM. This visual representation will be generated
+from the representation decribed in the previou section. Note that having a visual way of representing the query
+is very helpful during query transformation development/troubleshooting.
+
 #### Simple `SELECT *`
 
 ![Simple SELECT *](qgm/simple-select-star.svg)

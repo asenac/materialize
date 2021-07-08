@@ -225,6 +225,10 @@ of the quantifiers change its order.
 
 #### Cross join
 
+A `CROSS JOIN` can be represented as a `Select` box with no predicates as shown below:
+
+![Simple cross join](qgm/simple-cross-join.svg)
+
 #### CTEs
 
 ![Simple CTE](qgm/simple-cte.svg)
@@ -245,6 +249,11 @@ belongs in box 0. This correlation is made explicit by the edge going from Q1 in
 ![Lateral join](qgm/lateral-join.svg)
 
 We will see later how we could decorrelate a query like that via transformations of the query model.
+
+#### `NATURAL` joins
+
+`NATURAL` joins don't have an explicit representation in QGM since, like `LATERAL`, it is a name resolution concept
+that doesn't make sense anymore after it.
 
 ### Name resolution
 

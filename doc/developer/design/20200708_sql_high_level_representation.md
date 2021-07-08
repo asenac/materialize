@@ -298,6 +298,16 @@ are represented as `1 IN (SELECT 1 FROM (<exists subquery>))` as shown in the se
 Given that the two queries above are equivalent, the normalization process should normalize both to the same
 representation.
 
+#### Scalar subqueries
+
+#### `VALUES`
+
+![VALUES](qgm/simple-values.svg)
+
+![VALUES with alias](qgm/simple-values-with-alias.svg)
+
+#### `UNION`
+
 ### Name resolution
 
 As shown above, the query graph already contains almost all the information needed for name resoltion. Since the

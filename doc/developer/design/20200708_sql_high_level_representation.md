@@ -143,6 +143,8 @@ There a few subtle constraints that are not explicit in the representation above
 Some of the constraints above are just conventions for making query transformation easier due to having to cover
 fewer cases. The rest are just constructions that don't make sense semantically speaking.
 
+### Notes on expression representation
+
 ### Examples
 
 This section includes examples of how some queries look like in QGM. This visual representation will be generated
@@ -172,8 +174,9 @@ Note that the having filter is just a regular predicate on the `Select` box rang
 
 ![Simple inner join](qgm/simple-inner-join.svg)
 
-Note that the inner join above is semantically equivalent to the comma join in the previous example. In fact, the
-normalization step will simplify this query leaving it exactly as the one in the example above:
+Note that the inner join above is semantically equivalent to the comma join in the previous example. Boxes 1 and 2
+represent the binary inner joins in the query, but they can be squashed into box 0, without altering the results of
+the query. In fact, the normalization step will simplify this query leaving it exactly as the one in the example above:
 
 ![Simple inner join after normalization](qgm/simple-inner-join-after-normalization.svg)
 
@@ -183,7 +186,21 @@ normalization step will simplify this query leaving it exactly as the one in the
 
 #### CTEs
 
+![Simple CTE](qgm/simple-cte.svg)
+
+Quantifiers 2 and 3 are ranging over the same box, which represents the CTE. Box 2 doesn't alter the results of
+box 0, but just adds aliases for the columns, for name resolution purposes. Normalization will get rid of all
+the intermediate `Select` boxes, leaving the query as follows:
+
+![Simple CTE after normalization](qgm/simple-cte-after-normalization.svg)
+
 ### Name resolution
+
+As shown above, the query graph already contains almost all the information needed for name resoltion. Since the
+query graph is built in a bottom-up manner, we can use the input quantifier for resolving names within the
+current part of the query being processed.
+
+To be continued...
 
 ### Distinctness and unique keys
 

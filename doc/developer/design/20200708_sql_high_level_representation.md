@@ -320,6 +320,7 @@ To be continued...
 
 * QGM with interior mutability, shared pointers and so on as implemented [here](https://github.com/asenac/rust-sql).
 * Relational algebra representation
+* Convert `MirRelationExpr` into a normalization-friendly representation with explicit `outer join` operator.
 
 ## Open questions
 

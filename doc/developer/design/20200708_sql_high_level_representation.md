@@ -286,6 +286,18 @@ We will see later how we could decorrelate a query like that via transformations
 `NATURAL` joins don't have an explicit representation in QGM since, like `LATERAL`, it is a name resolution concept
 that doesn't make sense anymore after it.
 
+#### `EXISTS` and `IN SELECT`
+
+`EXISTS` and `IN SELECT` subqueries are represented via `Existential` quantifiers. In fact, `EXISTS` subqueries
+are represented as `1 IN (SELECT 1 FROM (<exists subquery>))` as shown in the second example below.
+
+![IN SELECT](qgm/simple-in-select.svg)
+
+![EXISTS](qgm/simple-exists.svg)
+
+Given that the two queries above are equivalent, the normalization process should normalize both to the same
+representation.
+
 ### Name resolution
 
 As shown above, the query graph already contains almost all the information needed for name resoltion. Since the

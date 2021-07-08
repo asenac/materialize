@@ -131,7 +131,7 @@ There a few subtle constraints that are not explicit in the representation above
 
 * `BaseTable`, `TableFunction` and `Values` cannot have input quantifiers.
 * `Union`, `Except` and `Intersect` can only have input quantifiers of type `Foreach`.
-* Subquery quantifiers (`All`, `Any`, `Existential` and `Scalar` are only allowed in `Select` boxes.
+* Subquery quantifiers (`All`, `Any`, `Existential` and `Scalar`) are only allowed in `Select` boxes.
 * `Grouping` must have a single input quantifier of type `Foreach` ranging over a `Select` box.
 * A `Grouping` box is always ranged-over by a `Select` box.
 * `OuterJoin` must have at leat an input quantifier of type `PreservedForeach`. The remaining onee, if any, must

@@ -174,6 +174,37 @@ contained in data source operators, specifically in the projection of boxes of t
 `ColumnReference` is used everywhere else. A `ColumnReference` may either reference a quantifier of the same
 box that owns the containing expression or a quantifier from some parent box.
 
+The underlying expression behind a column reference can be obtained via a `dereference` method, whose implementation
+could be as follows:
+
+```rust
+    impl ColumnReference {
+        fn dereference<'a>(&self, model: &'a Model) -> &'a Expr {
+            let input_box = model
+                .quantifiers
+                .get(&self.quantifier_id)
+                .unwrap()
+                .input_box;
+            &model.boxes.get(&input_box).unwrap().columns[self.position].expr
+        }
+    }
+```
+
+Since this proposal uses identifiers instead of pointers, most methods in the implementation `Expr` will need to
+receive a reference to the model as a parameter. For example, a method for determining whether an expression is
+nullable or not may need to dereference a column reference, for which it needs acces to the model:
+
+```rust
+    impl Expr {
+        fn nullable(&self, model: &Model) -> bool {
+            match self {
+                ...
+                Expr::ColumnReference(c) => c.dereference(model).nullable(model),
+            }
+        }
+    }
+```
+
 ### Examples
 
 This section includes examples of how some queries look like in QGM. This visual representation will be generated
@@ -267,7 +298,7 @@ To be continued...
 
 ### Distinctness and unique keys
 
-### Query model transformations
+### Query model transformations: query normalization stage
 
 ## Alternatives
 
@@ -279,6 +310,9 @@ To be continued...
 * Relational algebra representation
 
 ## Open questions
+
+* Duplication in `transform` crate
+* Panicking or not
 
 <!--
 // Anything currently unanswered that needs specific focus. This section may be expanded during the doc meeting as

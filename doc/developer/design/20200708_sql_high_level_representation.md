@@ -212,7 +212,16 @@ the query. In fact, the normalization step will simplify this query leaving it e
 
 ![Simple inner join after normalization](qgm/simple-inner-join-after-normalization.svg)
 
-#### Left join
+#### Outer join
+
+![Simple left join](qgm/simple-left-join.svg)
+
+![Simple right join](qgm/simple-right-join.svg)
+
+Note that in QGM there is no join direction, so left and right joins have the same exact representation. Only the type
+of the quantifiers change its order.
+
+@todo ramble about outer join as a special correlated operand and alternate representations after normalization.
 
 #### Cross join
 

@@ -133,6 +133,7 @@ There a few subtle constraints that are not explicit in the representation above
 * `Union`, `Except` and `Intersect` can only have input quantifiers of type `Foreach`.
 * Subquery quantifiers (`All`, `Any`, `Existential` and `Scalar` are only allowed in `Select` boxes.
 * `Grouping` must have a single input quantifier of type `Foreach` ranging over a `Select` box.
+* A `Grouping` box is always ranged-over by a `Select` box.
 * `OuterJoin` must have at leat an input quantifier of type `PreservedForeach`. The remaining onee, if any, must
   be of type `Foreach`. An `OuterJoin` with all `PreservedForeach` input quantifiers represents a `FULL OUTER JOIN`.
   Note: temporarily during the generation of the query model we could allow subquery quantifiers in `OuterJoin` boxes for
@@ -148,8 +149,11 @@ fewer cases. The rest are just constructions that don't make sense semantically 
 ### Examples
 
 This section includes examples of how some queries look like in QGM. This visual representation will be generated
-from the representation decribed in the previou section. Note that having a visual way of representing the query
+from the representation decribed in the previous section. Note that having a visual way of representing the query
 is very helpful during query transformation development/troubleshooting.
+
+In this visual representation, predicates referencing columns from 1 or 2 quantifiers are represented as edges
+connecting the quantifiers involved in the predicate.
 
 #### Simple `SELECT *`
 
@@ -193,6 +197,17 @@ box 0, but just adds aliases for the columns, for name resolution purposes. Norm
 the intermediate `Select` boxes, leaving the query as follows:
 
 ![Simple CTE after normalization](qgm/simple-cte-after-normalization.svg)
+
+#### Lateral joins
+
+A `LATERAL` join is just a join where one of its operands is correlated with the remaining ones, ie. a sub-graph
+containing column references from quantifiers belonging in the parent context. For instance, in the following
+example quantifier 4 is correlated within box 0, since its sub-graph references a column from quantifier 0 which
+belongs in box 0. This correlation is made explicit by the edge going from Q1 in box 2 to Q0 in box 0.
+
+![Lateral join](qgm/lateral-join.svg)
+
+We will see later how we could decorrelate a query like that via transformations of the query model.
 
 ### Name resolution
 

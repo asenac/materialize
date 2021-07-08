@@ -144,7 +144,35 @@ There a few subtle constraints that are not explicit in the representation above
 Some of the constraints above are just conventions for making query transformation easier due to having to cover
 fewer cases. The rest are just constructions that don't make sense semantically speaking.
 
+All boxes have an ordered projection, represented as a vector of columns, defined as:
+
+```rust
+    struct Column {
+        expr: Expr,
+        alias: Option<String>,
+    }
+```
+
 ### Notes on expression representation
+
+Column have two representations in QGM: base columns and column references. Base columns are only allowed in expressions
+contained in data source operators, specifically in the projection of boxes of type `BaseTable` and `TableFunction`.
+
+```rust
+    enum Expr {
+        // ...
+        ColumnReference(ColumnReference),
+        BaseColumn(usize),
+    }
+
+    struct ColumnReference {
+        quantifier_id: QuantifierId,
+        position: usize,
+    }
+```
+
+`ColumnReference` is used everywhere else. A `ColumnReference` may either reference a quantifier of the same
+box that owns the containing expression or a quantifier from some parent box.
 
 ### Examples
 
@@ -216,6 +244,8 @@ query graph is built in a bottom-up manner, we can use the input quantifier for 
 current part of the query being processed.
 
 To be continued...
+
+#### Name resolution of GROUP BY queries
 
 ### Distinctness and unique keys
 

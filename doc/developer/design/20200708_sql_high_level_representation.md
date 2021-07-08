@@ -145,10 +145,39 @@ fewer cases. The rest are just constructions that don't make sense semantically 
 
 ### Examples
 
+#### Simple `SELECT *`
+
 ![Simple SELECT *](qgm/simple-select-star.svg)
+
+#### Simple `GROUP BY`
+
 ![Simple GROUP BY](qgm/simple-group-by.svg)
+
+
+#### `GROUP BY + HAVING`
+
 ![GROUP BY + HAVING](qgm/simple-group-by-having.svg)
 
+Note that the having filter is just a regular predicate on the `Select` box ranging over the `Grouping` box.
+
+#### Comma join
+
+![Simple comma join](qgm/simple-comma-join.svg)
+
+#### Inner join
+
+![Simple inner join](qgm/simple-inner-join.svg)
+
+Note that the inner join above is semantically equivalent to the comma join in the previous example. In fact, the
+normalization step will simplify this query leaving it exactly as the one in the example above:
+
+![Simple inner join after normalization](qgm/simple-inner-join-after-normalization.svg)
+
+#### Left join
+
+#### Cross join
+
+#### CTEs
 
 ### Name resolution
 

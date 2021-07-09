@@ -430,6 +430,11 @@ struct NameResolutionContext<'a> {
 
 ### Distinctness and unique keys
 
+The `DISTINCT` handling in the QGM paper cite above is a bit messy, so the solution proposed here differs a bit
+of the one described in that paper...
+
+@todo to be continued
+
 ### Query model transformations: query normalization stage
 
 Some normalization transformations are better/easier done with a representation at a higher level than our current

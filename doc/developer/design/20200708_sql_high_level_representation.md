@@ -24,6 +24,7 @@ The proposal in this document is based on the Query Graph Model representation f
     * be a self-contained data structure,
     * be easy to use,
     * be normalization-friendly.
+    * allow supporting complex features such as recursion in CTEs,
 * Proper support of `LATERAL` joins (#6875)
 * Support for functional dependency analysis during name resolution.
 
@@ -517,6 +518,16 @@ hammer used in `lowering.rs` will then be used for everything else that cannot b
 a decorrelated manner (for example, a correlated lateral non-preserving side of an outer join cannot be decorrelated
 in SQL since no predicate can cross the non-preserving boundary).
 
+### Recursive CTEs support
+
+A recursive CTE is a CTE with a union with two branches where one of the branches references the CTE and the other
+one doesn't (representing the base case). This can be easily supported by the proposed implementation. Circular
+memory ownership issues are avoided by making the model own all the nodes.
+
+Any traveral of the query graph must keep a set/bitset of visited boxes since the same box can be ranged over by
+several quantifiers. The same set/bitset will prevent infinite loops/stack overflows when traversing a recursive
+query.
+
 ## Alternatives
 
 <!--
@@ -524,6 +535,7 @@ in SQL since no predicate can cross the non-preserving boundary).
 -->
 
 * QGM with interior mutability, shared pointers and so on as implemented [here](https://github.com/asenac/rust-sql).
+    * Making all boxes to be directly owned by the model makes recursion easier to support.
 * Relational algebra representation
 * Convert `MirRelationExpr` into a normalization-friendly representation with explicit `outer join` operator.
 

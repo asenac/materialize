@@ -19,7 +19,17 @@ The proposal in this document is based on the Query Graph Model representation f
 // Enumerate the concrete goals that are in scope for the project.
 -->
 
+* The high level representation of SQL queries must:
+    * represent the query at a conceptual level, free of syntactic concepts,
+    * be a self-contained data structure,
+    * be easy to use,
+    * be normalization-friendly.
+* Proper support of `LATERAL` joins (#6875)
+* Support for functional dependency analysis during name resolution.
+
 ## Non-Goals
+
+* List all the transformations that will be moved from `Mir` to `Hir`.
 
 <!--
 // Enumerate potential goals that are explicitly out of scope for the project
@@ -311,16 +321,201 @@ representation.
 ### Name resolution
 
 As shown above, the query graph already contains almost all the information needed for name resoltion. Since the
-query graph is built in a bottom-up manner, we can use the input quantifier for resolving names within the
+query graph is built in a bottom-up manner, we can use the input quantifiers for resolving names within the
 current part of the query being processed.
 
-To be continued...
+It is important to restate the constraint mentioned above: all column references in expressions within each box
+*must* only point to quantifiers either within the same box or within an ancestor box through a chain of unique
+children (correlation).
 
-#### Name resolution of GROUP BY queries
+This section explains how the query graph model being built can be used for name resolution purposes using the following
+query as an example:
+
+![Name resolution](qgm/name-resolution-1.svg)
+
+When planning the `WHERE` clause, belongs in box 0 as shown above, the resulting expression must only reference
+quantifiers Q0 and Q5, however the relations visible in the scope according to the SQL standard are the relations
+represented by Q0, Q1 and Q4, ie. the leaf quantifiers of the comma join (represented by box 0).
+
+A new `NameResolutionContext` struct will encapsulate the name resolution logic, which resolves column names
+against the leaf quantifiers but lifts the column references through the projection of the intermediate boxes,
+all the way up to the current box.
+
+Following with the example, when resolving the reference to `y` in the `WHERE` clause, we will find that among
+the leaf quantifiers (Q0, Q1, Q4), only quantifier Q4 projects a column named `y`, so the column is resolved as
+`Q4.c0`, ie. the first column amongst the columns projected by Q4's input box (box 4).
+Since we must return a expression referencing only Q0 and Q5, we need to follow the linked chain made by
+`Quantifier::parent_box` and `QueryBox::ranging_quantifiers` until we reach a quantifier ranged over by
+box 0. The parent box of `Q4` is box 2, which projects `Q4.c0` as its forth column and it's ranged over by Q5.
+Therefore, following that chain, we have resolved that `y` means `Q5.c3` within the context of box 0.
+
+In the query above had and explicit projection or an ORDER BY clause names would be resolved against the same
+leaf quantifiers and the resulting column references lifted following the same process.
+
+Basically, a `NameResolutionContext` instance will represent the context of the `FROM` clause.
+
+#### Name resolution within subqueries
+
+Expressions within subqueries must see the symbols visible from the context the subquery is in. To support that
+`NameResultionContext` will contain an optional reference to a parent `NameResolutionContext`, that is passed
+down for planning the subquery, so that if a name cannot be resolved against the context of the `FROM` clause of
+the subquery, we go through the chain of parent contexts until we find a symbol that matches in one of them.
+
+#### Name resolution within the `ON` and `USING` clauses
+
+In the following example, the binary `LEFT JOIN` is represented by box 2, and hence, the `ON` clause belongs in
+that box.
+
+![Name resolution within the `ON` clause](qgm/name-resolution-3.svg)
+
+When planning a binary join, we will create a new `NameResolutionContext` which parent context is the same
+as the parent context of the parent comma join. The `NameResolutionContext` for the comma join is the sibling
+context, only visible by `LATERAL` join operands (more on that in the next subsection).
+
+The leaf quantifiers for the binary `LEFT JOIN` in the example above are Q1 and Q4. Once we are done planning
+the binary join, these leaf quantifiers are added as leaf quantifiers in the `NameResoltionContext` of the
+parent join.
+
+#### Name resolution within `LATERAL` joins
+
+When planning a `LATERAL` join operand, the `NameResolutionContext` for the join the `LATERAL` operand
+belongs to will be put temporarily in `lateral` mode, and passed down as the parent context of the query
+within the `LATERAL` join operand. When in `lateral` mode, a `NameResolutionContext` tries to resolve
+a name against its sibling context before it goes to its parent context.
+
+#### Name resolution of `GROUP BY` queries
+
+Symbols in the `GROUP BY` clause will be resolved as well against the `NameResoltionContext` representing
+the scope exposed by the `FROM` clause, but then lifted through the projection of the `Select` box representing
+the join that feeds the `Grouping` box created for the `GROUP BY` clause.
+
+Symbols in the `HAVING` clause and in the projection of the `GROUP BY` are also resolved against the
+`NameResoltionContext` of the `FROM` clause, but then lifted twice: once through the `Select` box representing
+the join that feeds the `Grouping` box and then through the `Grouping` box itself (since the projection
+of a `GROUP BY` and the predicates in the `HAVING` clause belong in `Select` box on top of the `Grouping` box).
+
+Lifting expressions through a grouping box is a bit special:
+
+* The projection of a `Grouping` box can only contain: columns references from the input quantifier that are
+  present in the grouping key, references to columns from the input quantifier that functionally depend on a column
+  in the grouping key, or aggregate expressions, which parameters must be column references from the input quantifier.
+* Aggregate expressions are lifted as column references.
+* Columns from the input quantifier that neither appear in the grouping nor functionally depend on any column in the
+  grouping key, cannot be lifted and hence an error is returned.
+
+@todo example
+
+#### Name resolution of CTEs
+
+A `NameResolutionContext` instance will be created for storing the processed CTEs.
+
+#### Name resolution implementation
+
+An example of implementation of the name resolution process described in this section can be seen
+[here](https://github.com/asenac/rust-sql/blob/master/src/query_model/model_generator.rs#L19).
+The code will be very similar, with the difference being that in that implementation boxes and quantifiers
+are referenced using shared pointers, rather than identifiers.
+
+```rust
+struct NameResolutionContext<'a> {
+    owner_box: Option<BoxId>,
+    quantifiers: Vec<QuantifierId>,
+    ctes: Option<HashMap<String, BoxId>>,
+    parent_context: Option<&'a NameResolutionContext<'a>>,
+    sibling_context: Option<&'a NameResolutionContext<'a>>,
+    is_lateral: bool,
+}
+```
 
 ### Distinctness and unique keys
 
 ### Query model transformations: query normalization stage
+
+Some normalization transformations are better/easier done with a representation at a higher level than our current
+`MirRelationExpr` representation. Specially those around SQL-specific concepts such as outer joins that are
+lost during lowering. Several examples of this are #6932, #6987 or #6988, but the list of unsupported cases that are
+hard to support at the moment is much longer.
+
+For example, consider the following two equivalent queries:
+
+```
+materialize=> explain select * from t1, lateral (select count(*) from t2 group by t1.f1);
+                Optimized Plan                
+----------------------------------------------
+ %0 =                                        +
+ | Get materialize.public.t1 (u254)          +
+                                             +
+ %1 =                                        +
+ | Get materialize.public.t1 (u254)          +
+ | Distinct group=(#0)                       +
+ | ArrangeBy ()                              +
+                                             +
+ %2 =                                        +
+ | Get materialize.public.t2 (u256)          +
+                                             +
+ %3 =                                        +
+ | Join %1 %2                                +
+ | | implementation = Differential %2 %1.()  +
+ | | demand = (#0)                           +
+ | Reduce group=(#0)                         +
+ | | agg count(true)                         +
+ | ArrangeBy (#0)                            +
+                                             +
+ %4 =                                        +
+ | Join %0 %3 (= #0 #2)                      +
+ | | implementation = Differential %0 %3.(#0)+
+ | | demand = (#0, #1, #3)                   +
+ | Project (#0, #1, #3)                      +
+ 
+(1 row)
+materialize=> explain select * from t1, (select count(*) from t2);
+               Optimized Plan               
+--------------------------------------------
+ %0 = Let l0 =                             +
+ | Get materialize.public.t2 (u256)        +
+ | Reduce group=()                         +
+ | | agg count(true)                       +
+                                           +
+ %1 =                                      +
+ | Get materialize.public.t1 (u254)        +
+                                           +
+ %2 =                                      +
+ | Get %0 (l0)                             +
+ | Negate                                  +
+ | Project ()                              +
+                                           +
+ %3 =                                      +
+ | Constant ()                             +
+                                           +
+ %4 =                                      +
+ | Union %2 %3                             +
+ | Map 0                                   +
+                                           +
+ %5 =                                      +
+ | Union %0 %4                             +
+ | ArrangeBy ()                            +
+                                           +
+ %6 =                                      +
+ | Join %1 %5                              +
+ | | implementation = Differential %1 %5.()+
+ | | demand = (#0..#2)                     +
+ 
+(1 row)
+materialize=>  
+```
+
+Ideally, any two semantically equivalent queries should result in the same execution plan: the most optimal one
+for obtaining/computing the desired results. However, after lowering the first query above, we are not able to
+detect that the grouping key is constant wrt the input of the aggregation and can then be removed, reducing the
+complexity of the resulting dataflow as shown in the plan for the second query, where the transformation has been
+manually applied.
+
+With a small set of normalization transformations applied on the high level representation of the querey, before
+lowering it, we could easily fix many cases like the ones listed above. These transformations could be used to
+decorrelate some, if not all, cases where the query can be expressed with equivalent non-correlated SQL. The big
+hammer used in `lowering.rs` will then be used for everything else that cannot be expressed with valid SQL in
+a decorrelated manner (for example, a correlated lateral non-preserving side of an outer join cannot be decorrelated
+in SQL since no predicate can cross the non-preserving boundary).
 
 ## Alternatives
 
@@ -331,6 +526,8 @@ To be continued...
 * QGM with interior mutability, shared pointers and so on as implemented [here](https://github.com/asenac/rust-sql).
 * Relational algebra representation
 * Convert `MirRelationExpr` into a normalization-friendly representation with explicit `outer join` operator.
+
+## Milestones
 
 ## Open questions
 

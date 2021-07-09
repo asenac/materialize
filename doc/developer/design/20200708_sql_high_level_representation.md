@@ -166,7 +166,7 @@ All boxes have an ordered projection, represented as a vector of columns, define
 
 ### Notes on expression representation
 
-Column have two representations in QGM: base columns and column references. Base columns are only allowed in expressions
+Columns have two representations in QGM: base columns and column references. Base columns are only allowed in expressions
 contained in data source operators, specifically in the projection of boxes of type `BaseTable` and `TableFunction`.
 
 ```rust

@@ -95,6 +95,16 @@ struct QueryBox {
     ranging_quantifiers: QuantifierSet,
 }
 
+impl QueryBox {
+    fn add_predicate(&mut self, predicate: Box<Expr>) {
+        match &mut self.box_type {
+            BoxType::Select(select) => select.predicates.push(predicate),
+            BoxType::OuterJoin(outer_join) => outer_join.predicates.push(predicate),
+            _ => panic!("invalid box type"),
+        }
+    }
+}
+
 enum BoxType {
     BaseTable(BaseTable),
     Except,
@@ -290,7 +300,11 @@ impl<'a> ModelGeneratorImpl<'a> {
         context: &mut NameResolutionContext,
     ) -> Result<(), String> {
         self.process_from_clause(&select.from, query_box, context)?;
-        // @todo selection, grouping, having, projection, distinct
+        if let Some(selection) = &select.selection {
+            let predicate = self.process_expr(&selection, context)?;
+            self.model.get_box_mut(query_box).add_predicate(predicate);
+        }
+        // @todo grouping, having, projection, distinct
         Ok(())
     }
 
@@ -302,7 +316,10 @@ impl<'a> ModelGeneratorImpl<'a> {
     ) -> Result<(), String> {
         for twj in from.iter() {
             let input_box = self.process_table_with_joins(&twj, context)?;
-            // @
+            // all comma-join operands are foreach quantifier
+            let _q = self
+                .model
+                .make_quantifier(QuantifierType::Foreach, input_box, query_box);
         }
         Ok(())
     }
@@ -356,6 +373,14 @@ impl<'a> ModelGeneratorImpl<'a> {
         context: &mut NameResolutionContext,
     ) -> Result<BoxId, String> {
         Ok(0)
+    }
+
+    fn process_expr<T: AstInfo>(
+        &mut self,
+        expr: &sql_parser::ast::Expr<T>,
+        context: &mut NameResolutionContext,
+    ) -> Result<Box<Expr>, String> {
+        Err(format!("unsupported stuff"))
     }
 }
 

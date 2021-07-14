@@ -22,7 +22,7 @@ impl Model {
         }
     }
 
-    fn make_box<'a>(&'a mut self, box_type: BoxType) -> BoxId {
+    fn make_box(&mut self, box_type: BoxType) -> BoxId {
         let id = self.next_box_id;
         self.next_box_id += 1;
         let b = Box::new(QueryBox {
@@ -36,7 +36,7 @@ impl Model {
         id
     }
 
-    fn make_select_box<'a>(&'a mut self) -> BoxId {
+    fn make_select_box(&mut self) -> BoxId {
         self.make_box(BoxType::Select(Select::new()))
     }
 
@@ -44,8 +44,37 @@ impl Model {
         &*self.boxes.get(&box_id).unwrap()
     }
 
-    fn get_box_mut<'a>(&'a mut self, box_id: BoxId) -> &'a QueryBox {
+    fn get_box_mut<'a>(&'a mut self, box_id: BoxId) -> &'a mut QueryBox {
         &mut *self.boxes.get_mut(&box_id).unwrap()
+    }
+
+    /// create a new quantifier and adds it to the parent box
+    fn make_quantifier(
+        &mut self,
+        quantifier_type: QuantifierType,
+        input_box: BoxId,
+        parent_box: BoxId,
+    ) -> QuantifierId {
+        let id = self.next_quantifier_id;
+        self.next_quantifier_id += 1;
+        let q = Box::new(Quantifier {
+            id,
+            quantifier_type,
+            input_box,
+            parent_box,
+            alias: None,
+        });
+        self.quantifiers.insert(id, q);
+        self.get_box_mut(parent_box).quantifiers.insert(id);
+        id
+    }
+
+    fn get_quantifier<'a>(&'a self, box_id: BoxId) -> &'a Quantifier {
+        &*self.quantifiers.get(&box_id).unwrap()
+    }
+
+    fn get_quantifier_mut<'a>(&'a mut self, box_id: BoxId) -> &'a mut Quantifier {
+        &mut *self.quantifiers.get_mut(&box_id).unwrap()
     }
 }
 
@@ -110,6 +139,14 @@ struct OuterJoin {
     predicates: Vec<Box<Expr>>,
 }
 
+impl OuterJoin {
+    fn new() -> Self {
+        Self {
+            predicates: Vec::new(),
+        }
+    }
+}
+
 struct Select {
     predicates: Vec<Box<Expr>>,
     order_key: Option<Vec<Box<Expr>>>,
@@ -171,7 +208,9 @@ struct BaseColumn {
 // Model generator
 //
 
-use sql_parser::ast::{AstInfo, Cte, Ident, Query, SelectStatement, SetExpr, TableWithJoins};
+use sql_parser::ast::{
+    AstInfo, Cte, Ident, Query, SelectStatement, SetExpr, TableFactor, TableWithJoins,
+};
 
 struct ModelGenerator {}
 
@@ -261,7 +300,62 @@ impl<'a> ModelGeneratorImpl<'a> {
         query_box: BoxId,
         context: &mut NameResolutionContext,
     ) -> Result<(), String> {
+        for twj in from.iter() {
+            let input_box = self.process_table_with_joins(&twj, context)?;
+            // @
+        }
         Ok(())
+    }
+
+    fn process_table_with_joins<T: AstInfo>(
+        &mut self,
+        twj: &TableWithJoins<T>,
+        context: &mut NameResolutionContext,
+    ) -> Result<BoxId, String> {
+        let mut left_box = self.process_table_factor(&twj.relation, context)?;
+        for join in twj.joins.iter() {
+            let right_box = self.process_table_factor(&join.relation, context)?;
+
+            let (box_type, left_q_type, right_q_type) = match &join.join_operator {
+                sql_parser::ast::JoinOperator::CrossJoin
+                | sql_parser::ast::JoinOperator::Inner(_) => (
+                    BoxType::Select(Select::new()),
+                    QuantifierType::Foreach,
+                    QuantifierType::Foreach,
+                ),
+                sql_parser::ast::JoinOperator::FullOuter(_) => (
+                    BoxType::OuterJoin(OuterJoin::new()),
+                    QuantifierType::PreservedForeach,
+                    QuantifierType::PreservedForeach,
+                ),
+                sql_parser::ast::JoinOperator::LeftOuter(_) => (
+                    BoxType::OuterJoin(OuterJoin::new()),
+                    QuantifierType::PreservedForeach,
+                    QuantifierType::Foreach,
+                ),
+                sql_parser::ast::JoinOperator::RightOuter(_) => (
+                    BoxType::OuterJoin(OuterJoin::new()),
+                    QuantifierType::Foreach,
+                    QuantifierType::PreservedForeach,
+                ),
+            };
+            let join_id = self.model.make_box(box_type);
+            let _let_q = self.model.make_quantifier(left_q_type, left_box, join_id);
+            let _right_q = self.model.make_quantifier(right_q_type, right_box, join_id);
+
+            // join constraint
+
+            left_box = join_id;
+        }
+        Ok(left_box)
+    }
+
+    fn process_table_factor<T: AstInfo>(
+        &mut self,
+        table_factor: &TableFactor<T>,
+        context: &mut NameResolutionContext,
+    ) -> Result<BoxId, String> {
+        Ok(0)
     }
 }
 

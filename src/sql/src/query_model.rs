@@ -117,6 +117,8 @@ enum BoxType {
     Values(Values),
 }
 
+// pub use sql_parser::ast::Ident;
+
 struct Quantifier {
     /// uniquely identifiers the quantifier within the model
     id: QuantifierId,
@@ -127,7 +129,7 @@ struct Quantifier {
     /// the box that owns this quantifier
     parent_box: BoxId,
     /// alias for name resolution purposes
-    alias: Option<String>,
+    alias: Option<Ident>,
 }
 
 enum QuantifierType {
@@ -218,6 +220,7 @@ struct BaseColumn {
 // Model generator
 //
 
+use sql_parser::ast::JoinConstraint;
 use sql_parser::ast::{
     AstInfo, Cte, Ident, Query, SelectStatement, SetExpr, TableFactor, TableWithJoins,
 };
@@ -360,7 +363,17 @@ impl<'a> ModelGeneratorImpl<'a> {
             let _let_q = self.model.make_quantifier(left_q_type, left_box, join_id);
             let _right_q = self.model.make_quantifier(right_q_type, right_box, join_id);
 
-            // join constraint
+            match &join.join_operator {
+                sql_parser::ast::JoinOperator::CrossJoin => {
+                    let join = self.model.get_box_mut(join_id);
+                }
+                sql_parser::ast::JoinOperator::Inner(constraint)
+                | sql_parser::ast::JoinOperator::FullOuter(constraint)
+                | sql_parser::ast::JoinOperator::LeftOuter(constraint)
+                | sql_parser::ast::JoinOperator::RightOuter(constraint) => {
+                    self.process_join_constraint(constraint, join_id, context)?;
+                }
+            }
 
             left_box = join_id;
         }
@@ -372,7 +385,28 @@ impl<'a> ModelGeneratorImpl<'a> {
         table_factor: &TableFactor<T>,
         context: &mut NameResolutionContext,
     ) -> Result<BoxId, String> {
+        // match table_factor {
+        //     TableFactor::Table { name, .. } => {}
+        //     _ => return Err(format!("unsupported stuff")),
+        // }
         Ok(0)
+    }
+
+    fn process_join_constraint<T: AstInfo>(
+        &mut self,
+        constraint: &JoinConstraint<T>,
+        join_id: BoxId,
+        context: &mut NameResolutionContext,
+    ) -> Result<(), String> {
+        match constraint {
+            JoinConstraint::On(expr) => {
+                let expr = self.process_expr(expr, context)?;
+                let join = self.model.get_box_mut(join_id);
+                join.add_predicate(expr);
+            }
+            _ => return Err(format!("unsupported stuff")),
+        }
+        Ok(())
     }
 
     fn process_expr<T: AstInfo>(

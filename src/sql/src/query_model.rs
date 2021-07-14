@@ -1,13 +1,14 @@
 #![allow(dead_code, unused_variables)]
 
+use std::cell::{Ref, RefCell};
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 struct Model {
     top_box: BoxId,
-    boxes: HashMap<BoxId, Box<QueryBox>>,
+    boxes: HashMap<BoxId, Box<RefCell<QueryBox>>>,
     next_box_id: usize,
-    quantifiers: HashMap<QuantifierId, Box<Quantifier>>,
+    quantifiers: HashMap<QuantifierId, Box<RefCell<Quantifier>>>,
     next_quantifier_id: usize,
 }
 
@@ -25,13 +26,13 @@ impl Model {
     fn make_box(&mut self, box_type: BoxType) -> BoxId {
         let id = self.next_box_id;
         self.next_box_id += 1;
-        let b = Box::new(QueryBox {
+        let b = Box::new(RefCell::new(QueryBox {
             id,
             box_type,
             columns: Vec::new(),
             quantifiers: QuantifierSet::new(),
             ranging_quantifiers: QuantifierSet::new(),
-        });
+        }));
         self.boxes.insert(id, b);
         id
     }
@@ -40,12 +41,8 @@ impl Model {
         self.make_box(BoxType::Select(Select::new()))
     }
 
-    fn get_box<'a>(&'a self, box_id: BoxId) -> &'a QueryBox {
+    fn get_box(&self, box_id: BoxId) -> &RefCell<QueryBox> {
         &*self.boxes.get(&box_id).unwrap()
-    }
-
-    fn get_box_mut<'a>(&'a mut self, box_id: BoxId) -> &'a mut QueryBox {
-        &mut *self.boxes.get_mut(&box_id).unwrap()
     }
 
     /// create a new quantifier and adds it to the parent box
@@ -57,24 +54,20 @@ impl Model {
     ) -> QuantifierId {
         let id = self.next_quantifier_id;
         self.next_quantifier_id += 1;
-        let q = Box::new(Quantifier {
+        let q = Box::new(RefCell::new(Quantifier {
             id,
             quantifier_type,
             input_box,
             parent_box,
             alias: None,
-        });
+        }));
         self.quantifiers.insert(id, q);
-        self.get_box_mut(parent_box).quantifiers.insert(id);
+        self.get_box(parent_box).borrow_mut().quantifiers.insert(id);
         id
     }
 
-    fn get_quantifier<'a>(&'a self, box_id: BoxId) -> &'a Quantifier {
+    fn get_quantifier(&self, box_id: BoxId) -> &RefCell<Quantifier> {
         &*self.quantifiers.get(&box_id).unwrap()
-    }
-
-    fn get_quantifier_mut<'a>(&'a mut self, box_id: BoxId) -> &'a mut Quantifier {
-        &mut *self.quantifiers.get_mut(&box_id).unwrap()
     }
 }
 
@@ -103,6 +96,8 @@ impl QueryBox {
             _ => panic!("invalid box type"),
         }
     }
+
+    fn add_all_input_columns(&mut self, model: &Model) {}
 }
 
 enum BoxType {
@@ -202,13 +197,26 @@ struct ColumnReference {
 }
 
 impl ColumnReference {
-    fn dereference<'a>(&self, model: &'a Model) -> &'a Expr {
-        let input_box = model
-            .quantifiers
-            .get(&self.quantifier_id)
-            .unwrap()
-            .input_box;
-        &model.boxes.get(&input_box).unwrap().columns[self.position].expr
+    fn dereference<'a>(&self, model: &'a Model) -> ColumnRef<'a> {
+        let input_box = model.get_quantifier(self.quantifier_id).borrow().input_box;
+        let input_box = model.get_box(input_box).borrow();
+        ColumnRef {
+            query_box: input_box,
+            position: self.position,
+        }
+    }
+}
+
+struct ColumnRef<'a> {
+    query_box: Ref<'a, QueryBox>,
+    position: usize,
+}
+
+impl<'a> std::ops::Deref for ColumnRef<'a> {
+    type Target = Expr;
+
+    fn deref(&self) -> &Self::Target {
+        &self.query_box.columns[self.position].expr
     }
 }
 
@@ -305,7 +313,10 @@ impl<'a> ModelGeneratorImpl<'a> {
         self.process_from_clause(&select.from, query_box, context)?;
         if let Some(selection) = &select.selection {
             let predicate = self.process_expr(&selection, context)?;
-            self.model.get_box_mut(query_box).add_predicate(predicate);
+            self.model
+                .get_box(query_box)
+                .borrow_mut()
+                .add_predicate(predicate);
         }
         // @todo grouping, having, projection, distinct
         Ok(())
@@ -365,7 +376,8 @@ impl<'a> ModelGeneratorImpl<'a> {
 
             match &join.join_operator {
                 sql_parser::ast::JoinOperator::CrossJoin => {
-                    let join = self.model.get_box_mut(join_id);
+                    let join = self.model.get_box(join_id);
+                    join.borrow_mut().add_all_input_columns(self.model);
                 }
                 sql_parser::ast::JoinOperator::Inner(constraint)
                 | sql_parser::ast::JoinOperator::FullOuter(constraint)
@@ -401,8 +413,8 @@ impl<'a> ModelGeneratorImpl<'a> {
         match constraint {
             JoinConstraint::On(expr) => {
                 let expr = self.process_expr(expr, context)?;
-                let join = self.model.get_box_mut(join_id);
-                join.add_predicate(expr);
+                let join = self.model.get_box(join_id);
+                join.borrow_mut().add_predicate(expr);
             }
             _ => return Err(format!("unsupported stuff")),
         }

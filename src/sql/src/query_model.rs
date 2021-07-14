@@ -97,7 +97,25 @@ impl QueryBox {
         }
     }
 
-    fn add_all_input_columns(&mut self, model: &Model) {}
+    fn add_all_input_columns(&mut self, model: &Model) {
+        for quantifier_id in self.quantifiers.iter() {
+            let q = model.get_quantifier(*quantifier_id);
+            let bq = q.borrow();
+            if !bq.quantifier_type.is_subquery() {
+                let input_box = model.get_box(bq.input_box).borrow();
+                for (position, c) in input_box.columns.iter().enumerate() {
+                    let expr = Expr::ColumnReference(ColumnReference {
+                        quantifier_id: *quantifier_id,
+                        position,
+                    });
+                    self.columns.push(Column {
+                        expr,
+                        alias: c.alias.clone(),
+                    });
+                }
+            }
+        }
+    }
 }
 
 enum BoxType {
@@ -134,6 +152,18 @@ enum QuantifierType {
     Foreach,
     PreservedForeach,
     Scalar,
+}
+
+impl QuantifierType {
+    fn is_subquery(&self) -> bool {
+        match self {
+            QuantifierType::All
+            | QuantifierType::Any
+            | QuantifierType::Existential
+            | QuantifierType::Scalar => true,
+            _ => false,
+        }
+    }
 }
 
 struct BaseTable {/* @todo table metadata from the catalog */}
@@ -414,7 +444,9 @@ impl<'a> ModelGeneratorImpl<'a> {
             JoinConstraint::On(expr) => {
                 let expr = self.process_expr(expr, context)?;
                 let join = self.model.get_box(join_id);
-                join.borrow_mut().add_predicate(expr);
+                let mut mut_join = join.borrow_mut();
+                mut_join.add_predicate(expr);
+                mut_join.add_all_input_columns(self.model);
             }
             _ => return Err(format!("unsupported stuff")),
         }

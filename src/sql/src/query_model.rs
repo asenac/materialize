@@ -2,7 +2,7 @@
 
 use std::cell::{Ref, RefCell};
 use std::collections::BTreeSet;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A Query Graph Model instance represents a SQL query.
 struct Model {
@@ -79,6 +79,54 @@ impl Model {
     fn get_quantifier(&self, box_id: BoxId) -> &RefCell<Quantifier> {
         &*self.quantifiers.get(&box_id).unwrap()
     }
+
+    /// Visit boxes in the query graph in pre-order
+    fn visit_pre_boxes<F, E>(&self, mut f: F) -> Result<(), E>
+    where
+        F: FnMut(&RefCell<QueryBox>) -> Result<(), E>,
+    {
+        let mut visited = HashSet::new();
+        let mut stack = vec![self.top_box];
+        while !stack.is_empty() {
+            let box_id = stack.pop().unwrap();
+            if visited.insert(box_id) {
+                let query_box = self.get_box(box_id);
+                f(query_box)?;
+
+                stack.extend(
+                    query_box
+                        .borrow()
+                        .quantifiers
+                        .iter()
+                        .rev()
+                        .map(|q| self.get_quantifier(*q).borrow().input_box),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes unreferenced objects from the model. May be invoked
+    /// several times during query rewrites.
+    fn gargabe_collect(&mut self) {
+        let mut visited_boxes = HashSet::new();
+        let mut visited_quantifiers = HashSet::new();
+        let mut stack = vec![self.top_box];
+        while !stack.is_empty() {
+            let box_id = stack.pop().unwrap();
+            if visited_boxes.insert(box_id) {
+                let query_box = self.get_box(box_id);
+                for q in query_box.borrow().quantifiers.iter() {
+                    visited_quantifiers.insert(*q);
+                    let q = self.get_quantifier(*q).borrow();
+                    stack.push(q.input_box);
+                }
+            }
+        }
+        self.boxes.retain(|b, _| visited_boxes.contains(b));
+        self.quantifiers
+            .retain(|q, _| visited_quantifiers.contains(q));
+    }
 }
 
 type QuantifierId = usize;
@@ -108,6 +156,8 @@ impl QueryBox {
         }
     }
 
+    /// Add all columns from the non-subquery input quantifiers of the box to the
+    /// projection of the box.
     fn add_all_input_columns(&mut self, model: &Model) {
         for quantifier_id in self.quantifiers.iter() {
             let q = model.get_quantifier(*quantifier_id);

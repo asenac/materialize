@@ -63,6 +63,10 @@ impl Model {
         }));
         self.quantifiers.insert(id, q);
         self.get_box(parent_box).borrow_mut().quantifiers.insert(id);
+        self.get_box(input_box)
+            .borrow_mut()
+            .ranging_quantifiers
+            .insert(id);
         id
     }
 

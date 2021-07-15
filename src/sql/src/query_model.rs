@@ -4,11 +4,17 @@ use std::cell::{Ref, RefCell};
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 
+/// A Query Graph Model instance represents a SQL query.
 struct Model {
+    /// The ID of the box representing the entry-point of the query.
     top_box: BoxId,
+    /// All boxes in the query graph model.
     boxes: HashMap<BoxId, Box<RefCell<QueryBox>>>,
+    /// Used for asigning unique IDs to query boxes.
     next_box_id: usize,
+    /// All quantifiers in the query graph model.
     quantifiers: HashMap<QuantifierId, Box<RefCell<Quantifier>>>,
+    /// Used for asigning unique IDs to quantifiers.
     next_quantifier_id: usize,
 }
 
@@ -45,7 +51,7 @@ impl Model {
         &*self.boxes.get(&box_id).unwrap()
     }
 
-    /// create a new quantifier and adds it to the parent box
+    /// Create a new quantifier and adds it to the parent box
     fn make_quantifier(
         &mut self,
         quantifier_type: QuantifierType,
@@ -79,6 +85,7 @@ type QuantifierId = usize;
 type BoxId = usize;
 type QuantifierSet = BTreeSet<QuantifierId>;
 
+/// A semantic operator within a Query Graph.
 struct QueryBox {
     /// uniquely identifies the box within the model
     id: BoxId,
@@ -356,6 +363,10 @@ impl<'a> ModelGeneratorImpl<'a> {
         Ok(())
     }
 
+    /// Process the FROM clause of a Select represented by the given `query_box`.
+    /// `context` is the empty name resolution context that will be used for name
+    /// resolution of expressions within the given `query_box`, and that is fully
+    /// populated after this method.
     fn process_from_clause<T: AstInfo>(
         &mut self,
         from: &Vec<TableWithJoins<T>>,
@@ -372,6 +383,8 @@ impl<'a> ModelGeneratorImpl<'a> {
         Ok(())
     }
 
+    /// Process comma-join operands and nested joins. Returns the box id of the
+    /// box representing the join.
     fn process_table_with_joins<T: AstInfo>(
         &mut self,
         twj: &TableWithJoins<T>,
@@ -438,6 +451,9 @@ impl<'a> ModelGeneratorImpl<'a> {
         Ok(0)
     }
 
+    /// Add the join constraint to the given join box and populates the projection
+    /// of the box accordingly: ON-joins propagate all columns from all input quantifiers
+    /// while USING/NATURAL-joins propagate first joined columns and then the rest.
     fn process_join_constraint<T: AstInfo>(
         &mut self,
         constraint: &JoinConstraint<T>,

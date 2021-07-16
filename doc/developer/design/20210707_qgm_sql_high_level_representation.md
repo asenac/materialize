@@ -487,6 +487,20 @@ Any traversal of the query graph must keep a set/bitset of visited boxes since t
 several quantifiers. The same set/bitset will prevent infinite loops/stack overflows when traversing a recursive
 query.
 
+### Testing and debuggability of the normalization transformations
+
+The normalization transformations will be mostly tested using `datadriven` unit tests that will take raw SQL
+queries as their input and a list of transformations to be applied, and will dump the content of the graph after
+applying each of them. The query graph will be dumped as a `dot` graph which, once rendered, looks like the
+ones in the appendix with examples.
+
+The `dot` graph generator will also be very handy for debugging transformations. Also, for better debuggability
+Jthe rules themselves should not drive the traversal of the graph, but just make explicit the type of traversal
+they require. The traversal of the graph will be driven by some external code, that could be instrumentalized for
+dumping the full graph before and after applying the rule to every node of the graph. That way, by just patching
+one method, we could follow step by step the evolution of a query graph as it goes through the different
+transformations.
+
 ## Alternatives
 
 <!--
@@ -516,7 +530,6 @@ starting with the core `SelMerge` rule described in the paper.
 ## Open questions
 
 * Duplication in `transform` crate
-* Panicking or not
 
 <!--
 // Anything currently unanswered that needs specific focus. This section may be expanded during the doc meeting as

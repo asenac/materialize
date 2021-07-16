@@ -521,6 +521,14 @@ of the box. Then, a `Projection` will be added. If the box must enforce distinct
 `Reduce` operator will be added. If the box has `LIMIT`/`OFFSET`/`ORDER BY` a `TopK` operator will
 then be added.
 
+### View inlining
+
+View inlining could be implemented as a normalization rule where only non-materialized views are inlined.
+
+We could also do the opposite: find query patterns that match existing materialized views. Furthermore,
+we could even have a view compaction step where we load all the views in the system into the same model
+and find common sub-expressions within it, to identify intermediate results worth materializing.
+
 ## Alternatives
 
 <!--

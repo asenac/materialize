@@ -584,7 +584,19 @@ the query. In fact, the normalization step will simplify this query leaving it e
 Note that in QGM there is no join direction, so left and right joins have the same exact representation. Only the type
 of the quantifiers change its order.
 
-@todo ramble about outer join as a special correlated operand and alternate representations after normalization.
+Representing outer joins as explicit boxes goes against the goal of removing any sense of direction or join order
+from the query graph. For example, the following two queries are semantically equivalent but they lead to different
+query models where the join ordering is implied. We could add a normalization rule that always pushes inner joins
+through the preserving side of an outer join, assuming that it is always better to do inner joins first.
+
+![join](qgm/outer-inner-join.svg)
+![join](qgm/inner-outer-join.svg)
+
+However, we would still have the explicit join ordering issue if both joins in the query above where outer joins.
+To fix that issue, normalization will lift the preserving quantifier of an outer join to the parent `Select`
+making it a `Foreach` quantifier, leaving the `OuterJoin` box with just a `Foreach` quantifier.
+
+![join](qgm/normalized-outer-joins.svg)
 
 #### Cross join
 

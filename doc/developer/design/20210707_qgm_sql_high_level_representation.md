@@ -673,7 +673,9 @@ are represented as `1 IN (SELECT 1 FROM (<exists subquery>))` as shown in the se
 Given that the two queries above are equivalent, the normalization process should normalize both to the same
 representation.
 
-#### Scalar square's
+#### Scalar subqueries
+w
+![VALUES](qgm/simple-scalar-subquery.svg)
 
 #### `VALUES`
 
@@ -682,3 +684,5 @@ representation.
 ![VALUES with alias](qgm/simple-values-with-alias.svg)
 
 #### `UNION`
+
+![UNION](qgm/simple-union.svg)

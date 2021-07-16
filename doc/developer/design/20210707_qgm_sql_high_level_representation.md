@@ -516,6 +516,11 @@ column references from the current context.
 
 Note that the lowering code will no longer produce binary joins exclusively.
 
+After lowering the join, a `Map` operator will be added with the non-column expressions in the projection
+of the box. Then, a `Projection` will be added. If the box must enforce distinctness, the corresponding
+`Reduce` operator will be added. If the box has `LIMIT`/`OFFSET`/`ORDER BY` a `TopK` operator will
+then be added.
+
 ## Alternatives
 
 <!--

@@ -501,6 +501,21 @@ dumping the full graph before and after applying the rule to every node of the g
 one method, we could follow step by step the evolution of a query graph as it goes through the different
 transformations.
 
+### Lowering
+
+The lowering code will have to be modified so that it takes a Query Graph as its input.
+
+When lowering a `Select` box we will first build the join within that box. To do so, we will first build a
+dependency graph where each quantifier is connected to the quantifiers it is correlated with. We will lower
+the quantifiers in dependency order, starting with the uncorrelated ones. When lowering
+a correlated quantifier, we will apply its plan to the result of the sub-join of all the quantifiers it is
+connected to, resulting in simpler dataflow plans for lateral joins.
+
+The dependency graph will be built by traversing the sub-graph of the input quantifiers collecting the
+column references from the current context.
+
+Note that the lowering code will no longer produce binary joins exclusively.
+
 ## Alternatives
 
 <!--

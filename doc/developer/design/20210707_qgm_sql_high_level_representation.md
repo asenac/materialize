@@ -594,7 +594,10 @@ through the preserving side of an outer join, assuming that it is always better 
 
 However, we would still have the explicit join ordering issue if both joins in the query above where outer joins.
 To fix that issue, normalization will lift the preserving quantifier of an outer join to the parent `Select`
-making it a `Foreach` quantifier, leaving the `OuterJoin` box with just a `Foreach` quantifier.
+making it a `Foreach` quantifier, leaving the `OuterJoin` box with just a `Foreach` quantifier, which
+will represent a special potentially-correlated operator that produces a `NULL` row if none of the rows
+produced by its input matches the predicate. With this normalization, the query mentioned above will look as
+follows:
 
 ![join](qgm/normalized-outer-joins.svg)
 

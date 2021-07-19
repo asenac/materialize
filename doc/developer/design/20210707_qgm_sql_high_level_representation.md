@@ -674,8 +674,13 @@ Given that the two queries above are equivalent, the normalization process shoul
 representation.
 
 #### Scalar subqueries
-w
+
 ![VALUES](qgm/simple-scalar-subquery.svg)
+
+Scalar subqueries are represented via `Scalar` quantifiers as shown above. These quantifiers can be converted into
+regular `Foreach` quantifiers iff the inner subquery is guaranteed to always return one row at most and the NULL
+value returned when the subquery is empty is ignored. Otherwise, no predicate can cross the boundary of a `Scalar`
+quantifier.
 
 #### `VALUES`
 

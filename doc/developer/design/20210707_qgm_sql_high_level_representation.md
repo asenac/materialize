@@ -11,6 +11,15 @@ This document proposes to replace the current `HirRelationExpr` enum with a new 
 based on the Query Graph Model representation first introduced in
 [H. Pirahesh et al](http://projectsweb.cs.washington.edu/research/projects/db/weld/pirahesh-starburst-92.pdf).
 
+This new representation would allow us to introduce a new normalization stage before lowering the query
+into a dataflow, before important concepts for the normalization of SQL queries, such as outer joins and
+subquery boundaries, are blurred. The following two diagrams show the current view/query compilation pipeline
+and the one proposed in this document, which adds normalization at the SQL level:
+
+![Current optimizer pipeline](qgm/current-optimizer-pipeline.svg)
+
+![Proposed optimizer pipeline](qgm/proposed-optimizer-pipeline.svg)
+
 ## Goals
 
 <!--

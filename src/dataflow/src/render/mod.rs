@@ -1123,18 +1123,36 @@ pub mod plan {
             }
             // Build each object in order, registering the arrangements it forms.
             let mut objects_to_build = Vec::with_capacity(desc.objects_to_build.len());
+            // Collect used arrangements by identifier.
+            let mut used_arrangements = BTreeMap::new();
             for build in desc.objects_to_build.into_iter() {
                 let (plan, keys) = Self::from_mir(&build.view, &mut arrangements)?;
                 arrangements.insert(Id::Global(build.id), keys);
+                plan.collect_used_arrangements(&mut used_arrangements);
                 objects_to_build.push(dataflow_types::BuildDesc {
                     id: build.id,
                     view: plan,
                 });
             }
 
+            let index_imports = desc
+                .index_imports
+                .into_iter()
+                .filter(|(_, (desc, _))| {
+                    if let Some(keys) = used_arrangements.get(&desc.on_id) {
+                        if let Some(_) = keys.iter().find(|key_set| desc.keys == **key_set) {
+                            return true;
+                        }
+                    } else if let Some(keys) = arrangements.get(&Id::Global(desc.on_id)) {
+                        return keys.first().map(|k| *k == desc.keys).unwrap_or(false);
+                    }
+                    false
+                })
+                .collect::<BTreeMap<_, _>>();
+
             Ok(DataflowDescription {
                 source_imports: desc.source_imports,
-                index_imports: desc.index_imports,
+                index_imports,
                 objects_to_build,
                 index_exports: desc.index_exports,
                 sink_exports: desc.sink_exports,
@@ -1142,6 +1160,73 @@ pub mod plan {
                 as_of: desc.as_of,
                 debug_name: desc.debug_name,
             })
+        }
+
+        fn collect_used_arrangements(
+            &self,
+            used_arrangements: &mut BTreeMap<expr::GlobalId, Vec<Vec<MirScalarExpr>>>,
+        ) {
+            match self {
+                Plan::Constant { .. } => {}
+                Plan::Get { id, key_val, .. } => {
+                    if let Id::Global(id) = id {
+                        if let Some((key, _)) = key_val {
+                            used_arrangements
+                                .entry(*id)
+                                .or_insert_with(Vec::new)
+                                .push(key.clone());
+                        }
+                    }
+                }
+                Plan::Let { id: _, value, body } => {
+                    value.collect_used_arrangements(used_arrangements);
+                    body.collect_used_arrangements(used_arrangements);
+                }
+                Plan::Mfp {
+                    input,
+                    mfp: _,
+                    key_val,
+                } => {
+                    input.collect_used_arrangements(used_arrangements);
+
+                    if let Some((key, _)) = key_val {
+                        if let Plan::Get { id, .. } = &**input {
+                            if let Id::Global(id) = id {
+                                used_arrangements
+                                    .entry(*id)
+                                    .or_insert_with(Vec::new)
+                                    .push(key.clone());
+                            }
+                        }
+                    }
+                }
+                Plan::FlatMap { input, .. }
+                | Plan::Reduce { input, .. }
+                | Plan::Negate { input, .. }
+                | Plan::TopK { input, .. }
+                | Plan::Threshold { input, .. } => {
+                    input.collect_used_arrangements(used_arrangements);
+                }
+                Plan::Join { inputs, .. } | Plan::Union { inputs } => {
+                    for input in inputs.iter() {
+                        input.collect_used_arrangements(used_arrangements);
+                    }
+                }
+                Plan::ArrangeBy { input, keys } => {
+                    input.collect_used_arrangements(used_arrangements);
+
+                    if let Plan::Get { id, .. } = &**input {
+                        if let Id::Global(id) = id {
+                            for key in keys.iter() {
+                                used_arrangements
+                                    .entry(*id)
+                                    .or_insert_with(Vec::new)
+                                    .push(key.clone());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -91,8 +91,9 @@ impl crate::Transform for PredicatePushdown {
         relation: &mut MirRelationExpr,
         _: TransformArgs,
     ) -> Result<(), crate::TransformError> {
-        let mut empty = HashMap::new();
-        self.action(relation, &mut empty);
+        let mut get_predicates = HashMap::new();
+        self.action(relation, &mut get_predicates);
+        self.prune(relation, &mut get_predicates);
         Ok(())
     }
 }
@@ -168,9 +169,7 @@ impl PredicatePushdown {
                 // Reduce the predicates to determine as best as possible
                 // whether they are literal errors before working with them.
                 let input_type = input.typ();
-                for predicate in predicates.iter_mut() {
-                    predicate.reduce(&input_type);
-                }
+                expr::canonicalize::canonicalize_predicates(predicates, &input_type);
 
                 // It can be helpful to know if there are any non-literal errors,
                 // as this is justification for not pushing down literal errors.
@@ -491,7 +490,7 @@ impl PredicatePushdown {
                 // `get_predicates` should now contain the intersection
                 // of predicates at each *use* of the binding. If it is
                 // non-empty, we can move those predicates to the value.
-                if let Some(list) = get_predicates.remove(&Id::Local(*id)) {
+                if let Some(list) = get_predicates.get(&Id::Local(*id)) {
                     if !list.is_empty() {
                         // Remove the predicates in `list` from the body.
                         body.visit_mut(&mut |e| {
@@ -505,7 +504,7 @@ impl PredicatePushdown {
                         });
                         // Apply the predicates in `list` to value. Canonicalize
                         // `list` so that plans are always deterministic.
-                        let mut list = list.into_iter().collect::<Vec<_>>();
+                        let mut list = list.iter().cloned().collect::<Vec<_>>();
                         expr::canonicalize::canonicalize_predicates(&mut list, &value.typ());
                         **value = value.take_dangerous().filter(list);
                     }
@@ -730,6 +729,31 @@ impl PredicatePushdown {
             x => {
                 // Recursively descend.
                 x.visit1_mut(|e| self.action(e, get_predicates));
+            }
+        }
+    }
+
+    /// Remove predicates from Filter operators on top of Get operators
+    /// once the set of predicates that have been pushed down is known.
+    fn prune(
+        &self,
+        relation: &mut MirRelationExpr,
+        get_predicates: &mut HashMap<Id, HashSet<MirScalarExpr>>,
+    ) {
+        match relation {
+            MirRelationExpr::Filter { input, predicates } => {
+                if let MirRelationExpr::Get {
+                    id: Id::Local(id), ..
+                } = **input
+                {
+                    if let Some(pushed_predicates) = get_predicates.get(&Id::Local(id)) {
+                        predicates.retain(|p| !pushed_predicates.contains(p));
+                    }
+                }
+                input.visit1_mut(|e| self.prune(e, get_predicates));
+            }
+            x => {
+                x.visit1_mut(|e| self.prune(e, get_predicates));
             }
         }
     }

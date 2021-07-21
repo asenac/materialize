@@ -201,12 +201,12 @@ EXPLAIN SELECT l_partkey AS col24843 , l_orderkey AS col24844 , l_partkey AS col
 ----
 %0 =
 | Get materialize.public.lineitem (u15)
-| Filter (#4 = (#4 % 5))
+| Filter (#4 = (#4 % 5)), ((#4 % 5) = (#4 % 5))
 | ArrangeBy ()
 
 %1 =
 | Get materialize.public.orders (u11)
-| Filter (#1 = 134), (#2 = (#2 % 5))
+| Filter (#1 = 134), (#2 = (#2 % 5)), ((#2 % 5) = (#2 % 5))
 | ArrangeBy (#2, #3)
 
 %2 =
@@ -261,16 +261,6 @@ WHERE a2.f1 + a1.f2 = (SELECT 1)
 AND a2.f1 IS NULL;
 ----
 %0 =
-| Get materialize.public.t1 (u1)
-| ArrangeBy ()
-
-%1 =
-| Get materialize.public.t1 (u1)
-| Filter isnull(#0)
-
-%2 =
-| Join %0 %1 (= 1 (#2 + #1))
-| | implementation = Differential %1 %0.()
-| | demand = (#0..#3)
+| Constant
 
 EOF

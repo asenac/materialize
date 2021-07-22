@@ -7,14 +7,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Pulls up predicates
+//! Lift predicates through the graph
+//!
+//! The main purpose of this transform is to get predicates out of the
+//! way before `RedundantJoin` transform that may prevent the removal
+//! of redundant join operands. `PredicatePushdown` is required
+//! as a cleanup step afterwards.
+//!
+//! It only lifts predicates from `Filter` operators, leaving join
+//! equiavelences untouched, since lifting them would prevent
+//! `RedundantJoin` from doing its job.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::TransformArgs;
 use expr::{Id, MirRelationExpr, MirScalarExpr};
 
-/// Transformation that pulls up predicates
+/// Lift predicates through the graph
 #[derive(Debug)]
 pub struct PredicatePullup;
 

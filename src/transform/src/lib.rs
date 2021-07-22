@@ -199,6 +199,7 @@ impl Default for FuseAndCollapse {
                 // `MirRelationExpr::Constant` if that is the case, so that subsequent use can
                 // clearly see this.
                 Box::new(crate::reduction::FoldConstants),
+                Box::new(crate::update_let::UpdateLet),
             ],
         }
     }

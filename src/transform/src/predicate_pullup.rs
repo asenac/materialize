@@ -86,16 +86,18 @@ impl PredicatePullup {
             MirRelationExpr::Map { input, scalars } => {
                 self.action(input, get_predicates);
 
-                if let MirRelationExpr::Filter {
-                    input: inner_input,
-                    predicates,
-                } = &mut **input
-                {
-                    if predicates.iter().all(|x| !x.is_literal_err()) {
-                        *relation = inner_input
-                            .take_dangerous()
-                            .map(scalars.to_owned())
-                            .filter(predicates.to_owned());
+                if scalars.iter().all(|x| !x.is_literal_err()) {
+                    if let MirRelationExpr::Filter {
+                        input: inner_input,
+                        predicates,
+                    } = &mut **input
+                    {
+                        if predicates.iter().all(|x| !x.is_literal_err()) {
+                            *relation = inner_input
+                                .take_dangerous()
+                                .map(scalars.to_owned())
+                                .filter(predicates.to_owned());
+                        }
                     }
                 }
             }

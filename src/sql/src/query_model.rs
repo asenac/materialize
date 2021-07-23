@@ -76,8 +76,8 @@ impl Model {
         id
     }
 
-    fn get_quantifier(&self, box_id: BoxId) -> &RefCell<Quantifier> {
-        &*self.quantifiers.get(&box_id).unwrap()
+    fn get_quantifier(&self, quantifier_id: BoxId) -> &RefCell<Quantifier> {
+        &*self.quantifiers.get(&quantifier_id).unwrap()
     }
 
     /// Visit boxes in the query graph in pre-order
@@ -721,6 +721,126 @@ impl<'a> NameResolutionContext<'a> {
         }
         if let Some(parent_context) = &self.parent_context {
             return parent_context.resolve_cte(name);
+        }
+        None
+    }
+
+    fn resolve_column(&self, model: &Model, name: &Vec<Ident>) -> Result<Expr, String> {
+        if let Some(expr) = self.resolve_column_in_context(model, name)? {
+            return Ok(expr);
+        }
+
+        if self.is_lateral {
+            if let Some(sibling) = &self.sibling_context {
+                if let Some(expr) = sibling.resolve_column_in_context(model, name)? {
+                    return Ok(expr);
+                }
+            }
+        }
+
+        if let Some(parent) = &self.parent_context {
+            return parent.resolve_column(model, name);
+        }
+
+        Err(format!("column {:?} could not be resolved", name))
+    }
+
+    fn resolve_column_in_context(
+        &self,
+        model: &Model,
+        name: &Vec<Ident>,
+    ) -> Result<Option<Expr>, String> {
+        let expr = match name.len() {
+            1 => {
+                let mut found = None;
+                for quantifier_id in self.quantifiers.iter() {
+                    if let Some(expr) =
+                        self.resolve_column_in_quantifier(model, *quantifier_id, &name[0])?
+                    {
+                        if found.is_some() {
+                            return Err(format!("ambiguous column name {:?}", name));
+                        }
+                        found = Some(expr);
+                    }
+                }
+
+                found
+            }
+            2 => {
+                if let Some(quantifier_id) = self.resolve_quantifier_in_context(model, &name[0]) {
+                    self.resolve_column_in_quantifier(model, quantifier_id, &name[1])?
+                } else {
+                    return Err(format!("unknown relation name {}", &name[0]));
+                }
+            }
+            _ => return Err(format!("unsupported stuff")),
+        };
+
+        Ok(expr)
+    }
+
+    fn resolve_column_in_quantifier(
+        &self,
+        model: &Model,
+        quantifier_id: QuantifierId,
+        name: &Ident,
+    ) -> Result<Option<Expr>, String> {
+        let q = model.get_quantifier(quantifier_id).borrow();
+        let input_box = model.get_box(q.input_box).borrow();
+        let mut found = None;
+        for (position, c) in input_box.columns.iter().enumerate() {
+            if let Some(alias) = &c.alias {
+                if alias == name {
+                    if found.is_some() {
+                        return Err(format!("ambiguous column name {}", name));
+                    }
+
+                    found = Some(position);
+                }
+            }
+        }
+
+        if let Some(position) = found {
+            let expr = Expr::ColumnReference(ColumnReference {
+                quantifier_id,
+                position,
+            });
+            // @todo pullup_column_reference
+            Ok(Some(expr))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn resolve_quantifier_in_context(&self, model: &Model, name: &Ident) -> Option<QuantifierId> {
+        for q_id in self.quantifiers.iter() {
+            let q = model.get_quantifier(*q_id).borrow();
+            if let Some(alias) = &q.alias {
+                if alias == name {
+                    return Some(*q_id);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// @todo support qualified quantifiers
+    fn resolve_quantifier_recursively(&self, model: &Model, name: &Ident) -> Option<QuantifierId> {
+        if let Some(q_id) = self.resolve_quantifier_in_context(model, name) {
+            return Some(q_id);
+        }
+
+        if self.is_lateral {
+            if let Some(sibling) = &self.sibling_context {
+                if let Some(q_id) = sibling.resolve_quantifier_in_context(model, name) {
+                    return Some(q_id);
+                }
+            }
+        }
+
+        if let Some(parent) = &self.parent_context {
+            return parent.resolve_quantifier_recursively(model, name);
         }
         None
     }

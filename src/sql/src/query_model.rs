@@ -529,30 +529,30 @@ impl<'a> ModelGeneratorImpl<'a> {
     ) -> Result<QuantifierId, String> {
         let (mut box_id, is_scope, alias) = match table_factor {
             TableFactor::Table { name, alias } => {
-                // @todo check for ctes
-                // @todo resolve them from the catalog and cache them
-                let box_id = self.model.make_box(BoxType::BaseTable(BaseTable::new()));
-                let mut base_table = self.model.get_box(box_id).borrow_mut();
-                for i in 0..3 {
-                    base_table.columns.push(Column {
-                        expr: Expr::BaseColumn(BaseColumn { position: i }),
-                        alias: Some(Ident::new(format!("COLUMN{}", i + 1))),
-                    });
-                }
                 let alias = if let Some(_) = alias {
                     alias.clone()
                 } else {
-                    let name = match name {
-                        sql_parser::ast::RawName::Name(c) => c.0.last().cloned().unwrap(),
-                        _ => return Err(format!("unsupported")),
-                    };
+                    let name = self.extract_name(name)?;
                     Some(TableAlias {
                         name,
                         columns: Vec::new(),
                         strict: false,
                     })
                 };
-                (box_id, true, alias.clone())
+                if let Some(cte_id) = context.resolve_cte(&self.extract_name(name)?) {
+                    (cte_id, true, alias.clone())
+                } else {
+                    // @todo resolve them from the catalog and cache them
+                    let box_id = self.model.make_box(BoxType::BaseTable(BaseTable::new()));
+                    let mut base_table = self.model.get_box(box_id).borrow_mut();
+                    for i in 0..3 {
+                        base_table.columns.push(Column {
+                            expr: Expr::BaseColumn(BaseColumn { position: i }),
+                            alias: Some(Ident::new(format!("COLUMN{}", i + 1))),
+                        });
+                    }
+                    (box_id, true, alias.clone())
+                }
             }
             TableFactor::NestedJoin { join, alias } => {
                 let join_id = self.model.make_select_box();
@@ -656,6 +656,15 @@ impl<'a> ModelGeneratorImpl<'a> {
     ) -> Result<Box<Expr>, String> {
         Err(format!("unsupported stuff"))
     }
+
+    /// @todo support for RawName::Id
+    fn extract_name(&self, name: &sql_parser::ast::RawName) -> Result<Ident, String> {
+        let name = match name {
+            sql_parser::ast::RawName::Name(c) => c.0.last().cloned().unwrap(),
+            _ => return Err(format!("unsupported")),
+        };
+        Ok(name)
+    }
 }
 
 struct NameResolutionContext<'a> {
@@ -704,6 +713,16 @@ impl<'a> NameResolutionContext<'a> {
         I: IntoIterator<Item = QuantifierId>,
     {
         self.quantifiers.extend(quantifiers);
+    }
+
+    fn resolve_cte(&self, name: &Ident) -> Option<BoxId> {
+        if let Some(id) = self.ctes.get(name) {
+            return Some(*id);
+        }
+        if let Some(parent_context) = &self.parent_context {
+            return parent_context.resolve_cte(name);
+        }
+        None
     }
 }
 

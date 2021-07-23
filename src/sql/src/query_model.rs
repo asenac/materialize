@@ -511,7 +511,31 @@ impl<'a> ModelGeneratorImpl<'a> {
                     expr: ast::Expr::QualifiedWildcard(table_name),
                     alias: _,
                 } => {
-                    return Err(format!("unsupported stuff"));
+                    // @todo qualified tables
+                    if let Some((context, quantifier_id)) = context
+                        .resolve_quantifier_recursively(self.model, table_name.last().unwrap())
+                    {
+                        let input_box_id =
+                            self.model.get_quantifier(quantifier_id).borrow().input_box;
+                        let input_box = self.model.get_box(input_box_id).borrow();
+                        for (position, c) in input_box.columns.iter().enumerate() {
+                            let expr = Expr::ColumnReference(ColumnReference {
+                                quantifier_id,
+                                position,
+                            });
+                            let expr = context.pullup_column_reference(self.model, expr)?;
+                            self.model
+                                .get_box(query_box)
+                                .borrow_mut()
+                                .columns
+                                .push(Column {
+                                    expr,
+                                    alias: c.alias.clone(),
+                                });
+                        }
+                    } else {
+                        return Err(format!("unknown table {:?}", table_name));
+                    }
                 }
                 ast::SelectItem::Expr { expr, alias } => {
                     let expr = self.process_expr(expr, context)?;
@@ -946,15 +970,19 @@ impl<'a> NameResolutionContext<'a> {
     }
 
     /// @todo support qualified quantifiers
-    fn resolve_quantifier_recursively(&self, model: &Model, name: &Ident) -> Option<QuantifierId> {
+    fn resolve_quantifier_recursively(
+        &'a self,
+        model: &Model,
+        name: &Ident,
+    ) -> Option<(&'a NameResolutionContext<'a>, QuantifierId)> {
         if let Some(q_id) = self.resolve_quantifier_in_context(model, name) {
-            return Some(q_id);
+            return Some((&self, q_id));
         }
 
         if self.is_lateral {
             if let Some(sibling) = &self.sibling_context {
                 if let Some(q_id) = sibling.resolve_quantifier_in_context(model, name) {
-                    return Some(q_id);
+                    return Some((&sibling, q_id));
                 }
             }
         }
@@ -1156,6 +1184,8 @@ mod tests {
             "select * from a, lateral(select * from b inner join c on a.column1)",
             "select * from a as a(a,b), lateral(select * from b inner join c on a.a)",
             "select b from a as a(a,b)",
+            "select a.b from a as a(a,b), d cross join lateral(select a.a, a.b as z from b inner join c on a.a) where a.a",
+            "select a.* from a as a(a,b)",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

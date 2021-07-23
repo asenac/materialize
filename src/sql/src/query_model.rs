@@ -944,6 +944,7 @@ impl<'a> NameResolutionContext<'a> {
                         *parent_box.ranging_quantifiers.iter().next().unwrap()
                     };
 
+                    // @todo special case for grouping boxes
                     c.position = model
                         .get_box(q.parent_box)
                         .borrow_mut()

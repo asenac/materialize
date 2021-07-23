@@ -612,7 +612,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                     for i in 0..3 {
                         base_table.columns.push(Column {
                             expr: Expr::BaseColumn(BaseColumn { position: i }),
-                            alias: Some(Ident::new(format!("COLUMN{}", i + 1))),
+                            alias: Some(Ident::new(format!("column{}", i + 1))),
                         });
                     }
                     (box_id, true, alias.clone())
@@ -844,7 +844,7 @@ impl<'a> NameResolutionContext<'a> {
                 if let Some(quantifier_id) = self.resolve_quantifier_in_context(model, &name[0]) {
                     self.resolve_column_in_quantifier(model, quantifier_id, &name[1])?
                 } else {
-                    return Err(format!("unknown relation name {}", &name[0]));
+                    None
                 }
             }
             _ => return Err(format!("unsupported stuff")),
@@ -1079,6 +1079,9 @@ mod tests {
             "select * from a, b, c",
             "select * from a, (b cross join c)",
             "with b(b) as (select f1 from a) select b from b, c",
+            "select * from a inner join b on a.column1, c",
+            "select * from a, lateral(select * from b inner join c on a.column1)",
+            "select * from a as a(a,b), lateral(select * from b inner join c on a.a)",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

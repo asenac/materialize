@@ -280,7 +280,7 @@ struct Values {
 
 struct Column {
     expr: Expr,
-    alias: Option<String>,
+    alias: Option<Ident>,
 }
 
 enum Expr {
@@ -325,10 +325,10 @@ struct BaseColumn {
 // Model generator
 //
 
-use sql_parser::ast::JoinConstraint;
 use sql_parser::ast::{
-    AstInfo, Cte, Ident, Query, SelectStatement, SetExpr, TableFactor, TableWithJoins,
+    Cte, Ident, Query, Raw, SelectStatement, SetExpr, TableFactor, TableWithJoins,
 };
+use sql_parser::ast::{JoinConstraint, TableAlias};
 
 struct ModelGenerator {}
 
@@ -337,7 +337,7 @@ impl ModelGenerator {
         Self {}
     }
 
-    fn generate<T: AstInfo>(self, statement: &SelectStatement<T>) -> Result<Model, String> {
+    fn generate(self, statement: &SelectStatement<Raw>) -> Result<Model, String> {
         let mut model = Model::new();
         {
             let generator = ModelGeneratorImpl::new(&mut model);
@@ -356,15 +356,15 @@ impl<'a> ModelGeneratorImpl<'a> {
         Self { model }
     }
 
-    fn process_top_level_query<T: AstInfo>(mut self, query: &Query<T>) -> Result<(), String> {
+    fn process_top_level_query(mut self, query: &Query<Raw>) -> Result<(), String> {
         let top_box = self.process_query(query, None)?;
         self.model.top_box = top_box;
         Ok(())
     }
 
-    fn process_query<T: AstInfo>(
+    fn process_query(
         &mut self,
-        query: &Query<T>,
+        query: &Query<Raw>,
         parent_context: Option<&NameResolutionContext>,
     ) -> Result<BoxId, String> {
         let box_id = self.model.make_select_box();
@@ -375,9 +375,9 @@ impl<'a> ModelGeneratorImpl<'a> {
         Ok(box_id)
     }
 
-    fn add_ctes_to_context<T: AstInfo>(
+    fn add_ctes_to_context(
         &mut self,
-        ctes: &Vec<Cte<T>>,
+        ctes: &Vec<Cte<Raw>>,
         context: &mut NameResolutionContext,
     ) -> Result<(), String> {
         // @todo CTEs can see previous CTEs within the same list
@@ -389,9 +389,9 @@ impl<'a> ModelGeneratorImpl<'a> {
         Ok(())
     }
 
-    fn process_query_body<T: AstInfo>(
+    fn process_query_body(
         &mut self,
-        body: &SetExpr<T>,
+        body: &SetExpr<Raw>,
         query_box: BoxId,
         context: &mut NameResolutionContext,
     ) -> Result<(), String> {
@@ -401,9 +401,9 @@ impl<'a> ModelGeneratorImpl<'a> {
         }
     }
 
-    fn process_select<T: AstInfo>(
+    fn process_select(
         &mut self,
-        select: &sql_parser::ast::Select<T>,
+        select: &sql_parser::ast::Select<Raw>,
         query_box: BoxId,
         context: &mut NameResolutionContext,
     ) -> Result<(), String> {
@@ -423,38 +423,38 @@ impl<'a> ModelGeneratorImpl<'a> {
     /// `context` is the empty name resolution context that will be used for name
     /// resolution of expressions within the given `query_box`, and that is fully
     /// populated after this method.
-    fn process_from_clause<T: AstInfo>(
+    fn process_from_clause(
         &mut self,
-        from: &Vec<TableWithJoins<T>>,
+        from: &Vec<TableWithJoins<Raw>>,
         query_box: BoxId,
         context: &mut NameResolutionContext,
     ) -> Result<(), String> {
         for twj in from.iter() {
-            let input_box = self.process_table_with_joins(&twj, context)?;
-            // all comma-join operands are foreach quantifier
-            let _q = self
-                .model
-                .make_quantifier(QuantifierType::Foreach, input_box, query_box);
+            self.process_comma_join_operand(&twj, context)?;
         }
         Ok(())
     }
 
     /// Process comma-join operands and nested joins. Returns the box id of the
     /// box representing the join.
-    fn process_table_with_joins<T: AstInfo>(
+    fn process_comma_join_operand(
         &mut self,
-        twj: &TableWithJoins<T>,
+        twj: &TableWithJoins<Raw>,
         context: &mut NameResolutionContext,
-    ) -> Result<BoxId, String> {
-        self.process_join_tree(&twj.relation, &twj.joins, context)
+    ) -> Result<(), String> {
+        // all comma-join operands are foreach quantifier
+        let _ =
+            self.process_join_tree(&twj.relation, &twj.joins, QuantifierType::Foreach, context)?;
+        Ok(())
     }
 
-    fn process_join_tree<T: AstInfo>(
+    fn process_join_tree(
         &mut self,
-        leftmost_relation: &TableFactor<T>,
-        joins: &[sql_parser::ast::Join<T>],
+        leftmost_relation: &TableFactor<Raw>,
+        joins: &[sql_parser::ast::Join<Raw>],
+        quantifier_type: QuantifierType,
         context: &mut NameResolutionContext,
-    ) -> Result<BoxId, String> {
+    ) -> Result<QuantifierId, String> {
         if let Some(join) = joins.last() {
             let (box_type, left_q_type, right_q_type) = match &join.join_operator {
                 sql_parser::ast::JoinOperator::CrossJoin
@@ -485,15 +485,14 @@ impl<'a> ModelGeneratorImpl<'a> {
                 NameResolutionContext::for_join(join_id, context.parent_context.clone(), context);
 
             // keep processing the join tree recursively
-            let left_box = self.process_join_tree(
+            let _left_q = self.process_join_tree(
                 leftmost_relation,
                 &joins[..joins.len() - 1],
+                left_q_type,
                 &mut join_context,
             )?;
-            let right_box = self.process_table_factor(&join.relation, &mut join_context)?;
-
-            let _let_q = self.model.make_quantifier(left_q_type, left_box, join_id);
-            let _right_q = self.model.make_quantifier(right_q_type, right_box, join_id);
+            let _right_q =
+                self.process_table_factor(&join.relation, right_q_type, &mut join_context)?;
 
             match &join.join_operator {
                 sql_parser::ast::JoinOperator::CrossJoin => {
@@ -511,19 +510,25 @@ impl<'a> ModelGeneratorImpl<'a> {
             let child_quantifiers = join_context.quantifiers;
             context.merge_quantifiers(child_quantifiers.into_iter());
 
-            Ok(join_id)
+            // add the join as a quantifier in the parent join
+            let quantifier_id =
+                self.model
+                    .make_quantifier(quantifier_type, join_id, context.owner_box);
+
+            Ok(quantifier_id)
         } else {
-            self.process_table_factor(leftmost_relation, context)
+            self.process_table_factor(leftmost_relation, quantifier_type, context)
         }
     }
 
-    fn process_table_factor<T: AstInfo>(
+    fn process_table_factor(
         &mut self,
-        table_factor: &TableFactor<T>,
+        table_factor: &TableFactor<Raw>,
+        quantifier_type: QuantifierType,
         context: &mut NameResolutionContext,
-    ) -> Result<BoxId, String> {
-        let box_id = match table_factor {
-            TableFactor::Table { name, .. } => {
+    ) -> Result<QuantifierId, String> {
+        let (mut box_id, is_scope, alias) = match table_factor {
+            TableFactor::Table { name, alias } => {
                 // @todo check for ctes
                 // @todo resolve them from the catalog and cache them
                 let box_id = self.model.make_box(BoxType::BaseTable(BaseTable::new()));
@@ -531,24 +536,103 @@ impl<'a> ModelGeneratorImpl<'a> {
                 for i in 0..3 {
                     base_table.columns.push(Column {
                         expr: Expr::BaseColumn(BaseColumn { position: i }),
-                        alias: Some(format!("COLUMN{}", i + 1)),
+                        alias: Some(Ident::new(format!("COLUMN{}", i + 1))),
                     });
                 }
-                box_id
+                let alias = if let Some(_) = alias {
+                    alias.clone()
+                } else {
+                    let name = match name {
+                        sql_parser::ast::RawName::Name(c) => c.0.last().cloned().unwrap(),
+                        _ => return Err(format!("unsupported")),
+                    };
+                    Some(TableAlias {
+                        name,
+                        columns: Vec::new(),
+                        strict: false,
+                    })
+                };
+                (box_id, true, alias.clone())
             }
-            // TableFactor::NestedJoin { join, .. } => {
-            // }
+            TableFactor::NestedJoin { join, alias } => {
+                let join_id = self.model.make_select_box();
+                let mut join_context = NameResolutionContext::for_join(
+                    join_id,
+                    context.parent_context.clone(),
+                    context,
+                );
+
+                self.process_comma_join_operand(join, &mut join_context)?;
+
+                if alias.is_none() {
+                    let child_quantifiers = join_context.quantifiers;
+                    context.merge_quantifiers(child_quantifiers.into_iter());
+                }
+
+                (join_id, alias.is_some(), alias.clone())
+            }
+            TableFactor::Derived {
+                lateral,
+                subquery,
+                alias,
+            } => {
+                let prev_lateral_flag = context.is_lateral;
+                context.is_lateral = *lateral;
+                let box_id = self.process_query(&subquery, Some(context))?;
+                context.is_lateral = prev_lateral_flag;
+
+                (box_id, true, alias.clone())
+            }
             _ => return Err(format!("unsupported stuff")),
         };
-        Ok(box_id)
+
+        if let Some(alias) = &alias {
+            if alias.strict
+                && alias.columns.len() != self.model.get_box(box_id).borrow().columns.len()
+            {
+                return Err(format!("column number mismatch"));
+            }
+            // add intermediate select box with the column aliases
+            if !alias.columns.is_empty() {
+                let select_id = self.model.make_select_box();
+                let quantifier_id =
+                    self.model
+                        .make_quantifier(QuantifierType::Foreach, box_id, select_id);
+                let mut select = self.model.get_box(select_id).borrow_mut();
+                for (position, c) in alias.columns.iter().enumerate() {
+                    select.columns.push(Column {
+                        expr: Expr::ColumnReference(ColumnReference {
+                            quantifier_id,
+                            position,
+                        }),
+                        alias: Some(c.clone()),
+                    });
+                }
+                box_id = select_id;
+            }
+        }
+
+        // Add the box to the current join with the given type
+        let quantifier_id = self
+            .model
+            .make_quantifier(quantifier_type, box_id, context.owner_box);
+
+        if let Some(alias) = &alias {
+            self.model.get_quantifier(quantifier_id).borrow_mut().alias = Some(alias.name.clone());
+        }
+
+        if is_scope {
+            context.quantifiers.push(quantifier_id);
+        }
+        Ok(quantifier_id)
     }
 
     /// Add the join constraint to the given join box and populates the projection
     /// of the box accordingly: ON-joins propagate all columns from all input quantifiers
     /// while USING/NATURAL-joins propagate first joined columns and then the rest.
-    fn process_join_constraint<T: AstInfo>(
+    fn process_join_constraint(
         &mut self,
-        constraint: &JoinConstraint<T>,
+        constraint: &JoinConstraint<Raw>,
         join_id: BoxId,
         context: &mut NameResolutionContext,
     ) -> Result<(), String> {
@@ -565,9 +649,9 @@ impl<'a> ModelGeneratorImpl<'a> {
         Ok(())
     }
 
-    fn process_expr<T: AstInfo>(
+    fn process_expr(
         &mut self,
-        expr: &sql_parser::ast::Expr<T>,
+        expr: &sql_parser::ast::Expr<Raw>,
         context: &mut NameResolutionContext,
     ) -> Result<Box<Expr>, String> {
         Err(format!("unsupported stuff"))

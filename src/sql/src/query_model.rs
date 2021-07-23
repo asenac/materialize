@@ -3,6 +3,7 @@
 use std::cell::{Ref, RefCell};
 use std::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 /// A Query Graph Model instance represents a SQL query.
 struct Model {
@@ -38,6 +39,7 @@ impl Model {
             columns: Vec::new(),
             quantifiers: QuantifierSet::new(),
             ranging_quantifiers: QuantifierSet::new(),
+            distinct: DistinctOperation::Preserve,
         }));
         self.boxes.insert(id, b);
         id
@@ -145,6 +147,11 @@ struct QueryBox {
     quantifiers: QuantifierSet,
     /// quantifiers ranging over this box
     ranging_quantifiers: QuantifierSet,
+
+    /// whether this box must enforce the uniqueness of its output, it is
+    /// guaranteed by structure of the box or it must preserve duplicated
+    /// rows from its input boxes.
+    distinct: DistinctOperation,
 }
 
 impl QueryBox {
@@ -191,6 +198,29 @@ enum BoxType {
     Values(Values),
 }
 
+impl BoxType {
+    fn get_box_type_str(&self) -> &'static str {
+        match self {
+            BoxType::BaseTable(..) => "BaseTable",
+            BoxType::Except => "Except",
+            BoxType::Grouping(..) => "Grouping",
+            BoxType::Intersect => "Intersect",
+            BoxType::OuterJoin(..) => "OuterJoin",
+            BoxType::Select(..) => "Select",
+            BoxType::TableFunction(..) => "TableFunction",
+            BoxType::Union => "Union",
+            BoxType::Values(..) => "Values",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum DistinctOperation {
+    Enforced,
+    Guaranteed,
+    Preserve,
+}
+
 // pub use sql_parser::ast::Ident;
 
 struct Quantifier {
@@ -206,6 +236,7 @@ struct Quantifier {
     alias: Option<Ident>,
 }
 
+#[derive(Debug)]
 enum QuantifierType {
     All,
     Any,
@@ -223,6 +254,19 @@ impl QuantifierType {
             | QuantifierType::Existential
             | QuantifierType::Scalar => true,
             _ => false,
+        }
+    }
+}
+
+impl fmt::Display for QuantifierType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            QuantifierType::Foreach => write!(f, "F"),
+            QuantifierType::PreservedForeach => write!(f, "P"),
+            QuantifierType::Existential => write!(f, "E"),
+            QuantifierType::All => write!(f, "All"),
+            QuantifierType::Any => write!(f, "Any"),
+            QuantifierType::Scalar => write!(f, "S"),
         }
     }
 }
@@ -283,11 +327,26 @@ struct Column {
     alias: Option<Ident>,
 }
 
+#[derive(Debug)]
 enum Expr {
     ColumnReference(ColumnReference),
     BaseColumn(BaseColumn),
 }
 
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            Expr::ColumnReference(c) => {
+                write!(f, "Q{}.C{}", c.quantifier_id, c.position)
+            }
+            Expr::BaseColumn(c) => {
+                write!(f, "C{}", c.position)
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 struct ColumnReference {
     quantifier_id: QuantifierId,
     position: usize,
@@ -317,6 +376,7 @@ impl<'a> std::ops::Deref for ColumnRef<'a> {
     }
 }
 
+#[derive(Debug)]
 struct BaseColumn {
     position: usize,
 }
@@ -416,6 +476,10 @@ impl<'a> ModelGeneratorImpl<'a> {
                 .add_predicate(predicate);
         }
         // @todo grouping, having, projection, distinct
+        self.model
+            .get_box(query_box)
+            .borrow_mut()
+            .add_all_input_columns(self.model);
         Ok(())
     }
 
@@ -568,6 +632,12 @@ impl<'a> ModelGeneratorImpl<'a> {
                     let child_quantifiers = join_context.quantifiers;
                     context.merge_quantifiers(child_quantifiers.into_iter());
                 }
+
+                // project everything
+                self.model
+                    .get_box(join_id)
+                    .borrow_mut()
+                    .add_all_input_columns(self.model);
 
                 (join_id, alias.is_some(), alias.clone())
             }
@@ -850,6 +920,148 @@ impl<'a> NameResolutionContext<'a> {
     }
 }
 
+struct DotGenerator {
+    output: String,
+    indent: u32,
+}
+
+impl DotGenerator {
+    fn new() -> Self {
+        Self {
+            output: String::new(),
+            indent: 0,
+        }
+    }
+
+    fn generate(mut self, model: &Model, label: &str) -> Result<String, String> {
+        self.new_line("digraph G {");
+        self.inc();
+        self.new_line("compound = true");
+        self.new_line("labeljust = l");
+        self.new_line(&format!("label=\"{}\"", label));
+        self.new_line("node [ shape = box ]");
+
+        let mut box_stack = vec![model.top_box];
+        let mut quantifiers = Vec::new();
+        let mut visited_boxes = HashSet::new();
+        while let Some(box_id) = box_stack.pop() {
+            if !visited_boxes.insert(box_id) {
+                continue;
+            }
+
+            let b = model.get_box(box_id).borrow();
+
+            self.new_line(&format!("subgraph cluster{} {{", box_id));
+            self.inc();
+            self.new_line(&format!(
+                "label = \"Box{}:{}\"",
+                box_id,
+                Self::get_box_title(&b)
+            ));
+            self.new_line(&format!(
+                "boxhead{} [ shape = record, label=\"{{ {} }}\" ]",
+                box_id,
+                Self::get_box_head(&b)
+            ));
+
+            self.new_line("{");
+            self.inc();
+            self.new_line("rank = same");
+
+            if b.quantifiers.len() > 0 {
+                self.new_line("node [ shape = circle ]");
+            }
+
+            for q_id in b.quantifiers.iter() {
+                quantifiers.push(*q_id);
+
+                let q = model.get_quantifier(*q_id).borrow();
+                box_stack.push(q.input_box);
+                self.new_line(&format!(
+                    "Q{0} [ label=\"Q{0}({1}){2}\" ]",
+                    q_id,
+                    q.quantifier_type,
+                    Self::get_quantifier_alias(&q)
+                ));
+            }
+
+            self.dec();
+            self.new_line("}");
+            self.dec();
+            self.new_line("}");
+        }
+
+        if quantifiers.len() > 0 {
+            self.new_line("edge [ arrowhead = none, style = dashed ]");
+            for q_id in quantifiers.iter() {
+                let q = model.get_quantifier(*q_id).borrow();
+                self.new_line(&format!(
+                    "Q{0} -> boxhead{1} [ lhead = cluster{1} ]",
+                    q_id, q.input_box
+                ));
+            }
+        }
+
+        self.dec();
+        self.new_line("}");
+        self.new_line(""); // final empty line
+        Ok(self.output)
+    }
+
+    fn get_box_title(b: &QueryBox) -> &'static str {
+        b.box_type.get_box_type_str()
+    }
+
+    fn get_box_head(b: &QueryBox) -> String {
+        let mut r = String::new();
+
+        r.push_str(&format!("Distinct: {:?}", b.distinct));
+
+        for (i, c) in b.columns.iter().enumerate() {
+            r.push_str(&format!("| {}: {}", i, c.expr));
+            if let Some(c) = &c.alias {
+                r.push_str(&format!(" as {}", c.as_str()));
+            }
+        }
+
+        r
+    }
+
+    fn get_quantifier_alias(q: &Quantifier) -> String {
+        if let Some(alias) = &q.alias {
+            format!(" as {}", alias)
+        } else {
+            "".to_string()
+        }
+    }
+
+    fn inc(&mut self) {
+        self.indent += 1;
+    }
+
+    fn dec(&mut self) {
+        self.indent -= 1;
+    }
+
+    fn append(&mut self, s: &str) {
+        self.output.push_str(s);
+    }
+
+    fn new_line(&mut self, s: &str) {
+        if !self.output.is_empty() && self.output.rfind('\n') != Some(self.output.len()) {
+            self.end_line();
+            for _ in 0..self.indent * 4 {
+                self.output.push(' ');
+            }
+        }
+        self.output.push_str(s);
+    }
+
+    fn end_line(&mut self) {
+        self.output.push('\n');
+    }
+}
+
 //
 // Dot generator
 //
@@ -864,7 +1076,9 @@ mod tests {
     fn simple_test() {
         let test_cases = vec![
             "select * from a",
-            "with b(b) as (select a from a) select b from b",
+            "select * from a, b, c",
+            "select * from a, (b cross join c)",
+            "with b(b) as (select f1 from a) select b from b, c",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();
@@ -872,6 +1086,9 @@ mod tests {
                 if let Statement::Select(select) = &stmt {
                     let generator = ModelGenerator::new();
                     let model = generator.generate(select).unwrap();
+
+                    let dot_generator = DotGenerator::new();
+                    println!("{}", dot_generator.generate(&model, test_case).unwrap());
                 }
             }
         }

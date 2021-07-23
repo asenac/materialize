@@ -229,6 +229,12 @@ impl QuantifierType {
 
 struct BaseTable {/* @todo table metadata from the catalog */}
 
+impl BaseTable {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
 struct Grouping {
     key: Vec<Box<Expr>>,
 }
@@ -440,10 +446,16 @@ impl<'a> ModelGeneratorImpl<'a> {
         twj: &TableWithJoins<T>,
         context: &mut NameResolutionContext,
     ) -> Result<BoxId, String> {
-        let mut left_box = self.process_table_factor(&twj.relation, context)?;
-        for join in twj.joins.iter() {
-            let right_box = self.process_table_factor(&join.relation, context)?;
+        self.process_join_tree(&twj.relation, &twj.joins, context)
+    }
 
+    fn process_join_tree<T: AstInfo>(
+        &mut self,
+        leftmost_relation: &TableFactor<T>,
+        joins: &[sql_parser::ast::Join<T>],
+        context: &mut NameResolutionContext,
+    ) -> Result<BoxId, String> {
+        if let Some(join) = joins.last() {
             let (box_type, left_q_type, right_q_type) = match &join.join_operator {
                 sql_parser::ast::JoinOperator::CrossJoin
                 | sql_parser::ast::JoinOperator::Inner(_) => (
@@ -468,6 +480,18 @@ impl<'a> ModelGeneratorImpl<'a> {
                 ),
             };
             let join_id = self.model.make_box(box_type);
+
+            let mut join_context =
+                NameResolutionContext::for_join(join_id, context.parent_context.clone(), context);
+
+            // keep processing the join tree recursively
+            let left_box = self.process_join_tree(
+                leftmost_relation,
+                &joins[..joins.len() - 1],
+                &mut join_context,
+            )?;
+            let right_box = self.process_table_factor(&join.relation, &mut join_context)?;
+
             let _let_q = self.model.make_quantifier(left_q_type, left_box, join_id);
             let _right_q = self.model.make_quantifier(right_q_type, right_box, join_id);
 
@@ -480,13 +504,17 @@ impl<'a> ModelGeneratorImpl<'a> {
                 | sql_parser::ast::JoinOperator::FullOuter(constraint)
                 | sql_parser::ast::JoinOperator::LeftOuter(constraint)
                 | sql_parser::ast::JoinOperator::RightOuter(constraint) => {
-                    self.process_join_constraint(constraint, join_id, context)?;
+                    self.process_join_constraint(constraint, join_id, &mut join_context)?;
                 }
             }
 
-            left_box = join_id;
+            let child_quantifiers = join_context.quantifiers;
+            context.merge_quantifiers(child_quantifiers.into_iter());
+
+            Ok(join_id)
+        } else {
+            self.process_table_factor(leftmost_relation, context)
         }
-        Ok(left_box)
     }
 
     fn process_table_factor<T: AstInfo>(
@@ -494,11 +522,25 @@ impl<'a> ModelGeneratorImpl<'a> {
         table_factor: &TableFactor<T>,
         context: &mut NameResolutionContext,
     ) -> Result<BoxId, String> {
-        // match table_factor {
-        //     TableFactor::Table { name, .. } => {}
-        //     _ => return Err(format!("unsupported stuff")),
-        // }
-        Ok(0)
+        let box_id = match table_factor {
+            TableFactor::Table { name, .. } => {
+                // @todo check for ctes
+                // @todo resolve them from the catalog and cache them
+                let box_id = self.model.make_box(BoxType::BaseTable(BaseTable::new()));
+                let mut base_table = self.model.get_box(box_id).borrow_mut();
+                for i in 0..3 {
+                    base_table.columns.push(Column {
+                        expr: Expr::BaseColumn(BaseColumn { position: i }),
+                        alias: Some(format!("COLUMN{}", i + 1)),
+                    });
+                }
+                box_id
+            }
+            // TableFactor::NestedJoin { join, .. } => {
+            // }
+            _ => return Err(format!("unsupported stuff")),
+        };
+        Ok(box_id)
     }
 
     /// Add the join constraint to the given join box and populates the projection
@@ -556,6 +598,28 @@ impl<'a> NameResolutionContext<'a> {
             sibling_context: None,
             is_lateral: false,
         }
+    }
+
+    fn for_join(
+        join_box: BoxId,
+        parent_context: Option<&'a NameResolutionContext<'a>>,
+        sibling_context: &'a NameResolutionContext<'a>,
+    ) -> Self {
+        Self {
+            owner_box: join_box,
+            quantifiers: Vec::new(),
+            ctes: HashMap::new(),
+            parent_context,
+            sibling_context: Some(sibling_context),
+            is_lateral: false,
+        }
+    }
+
+    fn merge_quantifiers<I>(&mut self, quantifiers: I)
+    where
+        I: IntoIterator<Item = QuantifierId>,
+    {
+        self.quantifiers.extend(quantifiers);
     }
 }
 

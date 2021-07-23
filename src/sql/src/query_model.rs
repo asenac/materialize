@@ -227,7 +227,7 @@ impl BoxType {
 
 #[derive(Debug)]
 enum DistinctOperation {
-    Enforced,
+    Enforce,
     Guaranteed,
     Preserve,
 }
@@ -488,7 +488,15 @@ impl<'a> ModelGeneratorImpl<'a> {
         }
         // @todo grouping, having, distinct
         self.process_projection(&select.projection, query_box, context)?;
-        // if let Some(distinct) = &select.distinct {}
+        if let Some(distinct) = &select.distinct {
+            match distinct {
+                sql_parser::ast::Distinct::EntireRow => {
+                    self.model.get_box(query_box).borrow_mut().distinct =
+                        DistinctOperation::Enforce;
+                }
+                _ => return Err(format!("@todo unsupported stuff")),
+            }
+        }
         Ok(())
     }
 
@@ -1186,6 +1194,7 @@ mod tests {
             "select b from a as a(a,b)",
             "select a.b from a as a(a,b), d cross join lateral(select a.a, a.b as z from b inner join c on a.a) where a.a",
             "select a.* from a as a(a,b)",
+            "select distinct a.* from a as a(a,b)",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

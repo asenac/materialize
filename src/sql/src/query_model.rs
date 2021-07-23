@@ -484,13 +484,48 @@ impl<'a> ModelGeneratorImpl<'a> {
             self.model
                 .get_box(query_box)
                 .borrow_mut()
-                .add_predicate(predicate);
+                .add_predicate(Box::new(predicate));
         }
-        // @todo grouping, having, projection, distinct
-        self.model
-            .get_box(query_box)
-            .borrow_mut()
-            .add_all_input_columns(self.model);
+        // @todo grouping, having, distinct
+        self.process_projection(&select.projection, query_box, context)?;
+        // if let Some(distinct) = &select.distinct {}
+        Ok(())
+    }
+
+    fn process_projection(
+        &mut self,
+        projection: &Vec<sql_parser::ast::SelectItem<Raw>>,
+        query_box: BoxId,
+        context: &mut NameResolutionContext,
+    ) -> Result<(), String> {
+        use sql_parser::ast;
+        for si in projection {
+            match si {
+                ast::SelectItem::Wildcard => {
+                    self.model
+                        .get_box(query_box)
+                        .borrow_mut()
+                        .add_all_input_columns(self.model);
+                }
+                ast::SelectItem::Expr {
+                    expr: ast::Expr::QualifiedWildcard(table_name),
+                    alias: _,
+                } => {
+                    return Err(format!("unsupported stuff"));
+                }
+                ast::SelectItem::Expr { expr, alias } => {
+                    let expr = self.process_expr(expr, context)?;
+                    self.model
+                        .get_box(query_box)
+                        .borrow_mut()
+                        .columns
+                        .push(Column {
+                            expr,
+                            alias: alias.clone(),
+                        });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -722,7 +757,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                 let expr = self.process_expr(expr, context)?;
                 let join = self.model.get_box(join_id);
                 let mut mut_join = join.borrow_mut();
-                mut_join.add_predicate(expr);
+                mut_join.add_predicate(Box::new(expr));
                 mut_join.add_all_input_columns(self.model);
             }
             _ => return Err(format!("unsupported stuff")),
@@ -734,10 +769,10 @@ impl<'a> ModelGeneratorImpl<'a> {
         &mut self,
         expr: &sql_parser::ast::Expr<Raw>,
         context: &NameResolutionContext,
-    ) -> Result<Box<Expr>, String> {
+    ) -> Result<Expr, String> {
         use sql_parser::ast;
         match expr {
-            ast::Expr::Identifier(id) => Ok(Box::new(context.resolve_column(&self.model, id)?)),
+            ast::Expr::Identifier(id) => Ok(context.resolve_column(&self.model, id)?),
             _ => Err(format!("unsupported stuff")),
         }
     }
@@ -1116,10 +1151,11 @@ mod tests {
             "select * from a",
             "select * from a, b, c",
             "select * from a, (b cross join c)",
-            "with b(b) as (select f1 from a) select b from b, c",
+            // "with b(b) as (select column1 from a) select b from b, c",
             "select * from a inner join b on a.column1, c",
             "select * from a, lateral(select * from b inner join c on a.column1)",
             "select * from a as a(a,b), lateral(select * from b inner join c on a.a)",
+            "select b from a as a(a,b)",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

@@ -652,9 +652,13 @@ impl<'a> ModelGeneratorImpl<'a> {
     fn process_expr(
         &mut self,
         expr: &sql_parser::ast::Expr<Raw>,
-        context: &mut NameResolutionContext,
+        context: &NameResolutionContext,
     ) -> Result<Box<Expr>, String> {
-        Err(format!("unsupported stuff"))
+        use sql_parser::ast;
+        match expr {
+            ast::Expr::Identifier(id) => Ok(Box::new(context.resolve_column(&self.model, id)?)),
+            _ => Err(format!("unsupported stuff")),
+        }
     }
 
     /// @todo support for RawName::Id

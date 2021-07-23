@@ -163,6 +163,17 @@ impl QueryBox {
         }
     }
 
+    fn add_column_if_not_exists(&mut self, expr: Expr) -> usize {
+        for (position, c) in self.columns.iter().enumerate() {
+            if c.expr == expr {
+                return position;
+            }
+        }
+        let position = self.columns.len();
+        self.columns.push(Column { expr, alias: None });
+        position
+    }
+
     /// Add all columns from the non-subquery input quantifiers of the box to the
     /// projection of the box.
     fn add_all_input_columns(&mut self, model: &Model) {
@@ -327,7 +338,7 @@ struct Column {
     alias: Option<Ident>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 enum Expr {
     ColumnReference(ColumnReference),
     BaseColumn(BaseColumn),
@@ -346,7 +357,7 @@ impl fmt::Display for Expr {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 struct ColumnReference {
     quantifier_id: QuantifierId,
     position: usize,
@@ -376,7 +387,7 @@ impl<'a> std::ops::Deref for ColumnRef<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 struct BaseColumn {
     position: usize,
 }
@@ -879,7 +890,7 @@ impl<'a> NameResolutionContext<'a> {
                 quantifier_id,
                 position,
             });
-            // @todo pullup_column_reference
+            let expr = self.pullup_column_reference(model, expr)?;
             Ok(Some(expr))
         } else {
             Ok(None)
@@ -917,6 +928,32 @@ impl<'a> NameResolutionContext<'a> {
             return parent.resolve_quantifier_recursively(model, name);
         }
         None
+    }
+
+    fn pullup_column_reference(&self, model: &Model, expr: Expr) -> Result<Expr, String> {
+        match expr {
+            Expr::ColumnReference(mut c) => {
+                loop {
+                    let q = model.get_quantifier(c.quantifier_id).borrow();
+                    if q.parent_box == self.owner_box {
+                        break;
+                    }
+                    let parent_q_id = {
+                        let parent_box = model.get_box(q.parent_box).borrow();
+                        assert!(parent_box.ranging_quantifiers.len() == 1);
+                        *parent_box.ranging_quantifiers.iter().next().unwrap()
+                    };
+
+                    c.position = model
+                        .get_box(q.parent_box)
+                        .borrow_mut()
+                        .add_column_if_not_exists(Expr::ColumnReference(c.clone()));
+                    c.quantifier_id = parent_q_id;
+                }
+                Ok(Expr::ColumnReference(c.clone()))
+            }
+            _ => panic!("expected column reference"),
+        }
     }
 }
 

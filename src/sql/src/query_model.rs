@@ -878,20 +878,24 @@ impl<'a> NameResolutionContext<'a> {
     }
 
     fn resolve_column(&self, model: &Model, name: &Vec<Ident>) -> Result<Expr, String> {
-        if let Some(expr) = self.resolve_column_in_context(model, name)? {
-            return Ok(expr);
-        }
+        let mut current_ctx = Some(self);
 
-        if self.is_lateral {
-            if let Some(sibling) = &self.sibling_context {
-                if let Some(expr) = sibling.resolve_column_in_context(model, name)? {
-                    return Ok(expr);
+        while let Some(current) = current_ctx {
+            if let Some(expr) = current.resolve_column_in_context(model, name)? {
+                return Ok(expr);
+            }
+
+            if current.is_lateral {
+                let mut sibling_ctx = current.sibling_context.clone();
+                while let Some(sibling) = sibling_ctx {
+                    if let Some(expr) = sibling.resolve_column_in_context(model, name)? {
+                        return Ok(expr);
+                    }
+                    sibling_ctx = sibling.sibling_context.clone();
                 }
             }
-        }
 
-        if let Some(parent) = &self.parent_context {
-            return parent.resolve_column(model, name);
+            current_ctx = current.parent_context.clone();
         }
 
         Err(format!("column {:?} could not be resolved", name))
@@ -1195,13 +1199,15 @@ mod tests {
             "select a.b from a as a(a,b), d cross join lateral(select a.a, a.b as z from b inner join c on a.a) where a.a",
             "select a.* from a as a(a,b)",
             "select distinct a.* from a as a(a,b)",
+            "select distinct a.* from a as a(a,b), b as b(b,c), c as c(c, d) cross join (d as d(d, e) cross join (f as f(f, h) cross join lateral(select e.e from e as e(e, f))))",
+            "select distinct a.* from a as a(a,b), b as b(b,c), c as c(c, d) cross join (d as d(d, e) cross join (f as f(f, h) cross join lateral(select a.a, b.b, c.c, d.d, e.e, f.f from e as e(e, f))))",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();
             for stmt in parsed {
                 if let Statement::Select(select) = &stmt {
                     let generator = ModelGenerator::new();
-                    let model = generator.generate(select).unwrap();
+                    let model = generator.generate(select).expect(test_case);
 
                     let dot_generator = DotGenerator::new();
                     println!("{}", dot_generator.generate(&model, test_case).unwrap());

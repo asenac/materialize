@@ -987,21 +987,25 @@ impl<'a> NameResolutionContext<'a> {
         model: &Model,
         name: &Ident,
     ) -> Option<(&'a NameResolutionContext<'a>, QuantifierId)> {
-        if let Some(q_id) = self.resolve_quantifier_in_context(model, name) {
-            return Some((&self, q_id));
-        }
+        let mut current_ctx = Some(self);
 
-        if self.is_lateral {
-            if let Some(sibling) = &self.sibling_context {
-                if let Some(q_id) = sibling.resolve_quantifier_in_context(model, name) {
-                    return Some((&sibling, q_id));
+        while let Some(current) = current_ctx {
+            if let Some(q_id) = current.resolve_quantifier_in_context(model, name) {
+                return Some((current, q_id));
+            }
+
+            if current.is_lateral {
+                let mut sibling_ctx = current.sibling_context.clone();
+                while let Some(sibling) = sibling_ctx {
+                    if let Some(q_id) = sibling.resolve_quantifier_in_context(model, name) {
+                        return Some((sibling, q_id));
+                    }
+                    sibling_ctx = sibling.sibling_context.clone();
                 }
             }
+            current_ctx = current.parent_context.clone();
         }
 
-        if let Some(parent) = &self.parent_context {
-            return parent.resolve_quantifier_recursively(model, name);
-        }
         None
     }
 
@@ -1201,6 +1205,7 @@ mod tests {
             "select distinct a.* from a as a(a,b)",
             "select distinct a.* from a as a(a,b), b as b(b,c), c as c(c, d) cross join (d as d(d, e) cross join (f as f(f, h) cross join lateral(select e.e from e as e(e, f))))",
             "select distinct a.* from a as a(a,b), b as b(b,c), c as c(c, d) cross join (d as d(d, e) cross join (f as f(f, h) cross join lateral(select a.a, b.b, c.c, d.d, e.e, f.f from e as e(e, f))))",
+            "select distinct a.* from a as a(a,b), b as b(b,c), c as c(c, d) cross join (d as d(d, e) cross join (f as f(f, h) cross join lateral(select a.*, b.*, c.*, d.*, e.*, f.* from e as e(e, f))))",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

@@ -163,14 +163,14 @@ impl QueryBox {
         }
     }
 
-    fn add_column_if_not_exists(&mut self, expr: Expr) -> usize {
+    fn add_column_if_not_exists(&mut self, expr: Expr, alias: Option<Ident>) -> usize {
         for (position, c) in self.columns.iter().enumerate() {
             if c.expr == expr {
                 return position;
             }
         }
         let position = self.columns.len();
-        self.columns.push(Column { expr, alias: None });
+        self.columns.push(Column { expr, alias });
         position
     }
 
@@ -1032,10 +1032,14 @@ impl<'a> NameResolutionContext<'a> {
                     };
 
                     // @todo special case for grouping boxes
+                    let alias = {
+                        let b = model.get_box(q.input_box).borrow();
+                        b.columns[c.position].alias.clone()
+                    };
                     c.position = model
                         .get_box(q.parent_box)
                         .borrow_mut()
-                        .add_column_if_not_exists(Expr::ColumnReference(c.clone()));
+                        .add_column_if_not_exists(Expr::ColumnReference(c.clone()), alias);
                     c.quantifier_id = parent_q_id;
                 }
                 Ok(Expr::ColumnReference(c.clone()))

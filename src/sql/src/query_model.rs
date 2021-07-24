@@ -468,6 +468,7 @@ impl<'a> ModelGeneratorImpl<'a> {
     ) -> Result<(), String> {
         match body {
             SetExpr::Select(select) => self.process_select(&*select, query_box, context),
+            SetExpr::Values(values) => self.process_values(&*values, query_box, context),
             _ => Err(format!("@todo unsupported stuff")),
         }
     }
@@ -801,6 +802,45 @@ impl<'a> ModelGeneratorImpl<'a> {
                 mut_join.add_all_input_columns(self.model);
             }
             _ => return Err(format!("unsupported stuff")),
+        }
+        Ok(())
+    }
+
+    fn process_values(
+        &mut self,
+        values: &sql_parser::ast::Values<Raw>,
+        query_box: BoxId,
+        context: &mut NameResolutionContext,
+    ) -> Result<(), String> {
+        let mut rows = Vec::with_capacity(values.0.len());
+        for values in values.0.iter() {
+            let mut row = Vec::with_capacity(values.len());
+            for value in values.iter() {
+                let expr = self.process_expr(value, context)?;
+                row.push(Box::new(expr));
+            }
+            rows.push(row);
+        }
+        let num_rows = rows.iter().next().map_or(0, |x| x.len());
+        let values_id = self.model.make_box(BoxType::Values(Values { rows }));
+        let quantifier_id =
+            self.model
+                .make_quantifier(QuantifierType::Foreach, values_id, query_box);
+        let mut query_box = self.model.get_box(query_box).borrow_mut();
+        let mut values_box = self.model.get_box(values_id).borrow_mut();
+        for i in 0..num_rows {
+            let ident = Ident::new(format!("column{}", i + 1));
+            query_box.columns.push(Column {
+                expr: Expr::ColumnReference(ColumnReference {
+                    quantifier_id,
+                    position: i,
+                }),
+                alias: Some(ident.clone()),
+            });
+            values_box.columns.push(Column {
+                expr: Expr::BaseColumn(BaseColumn { position: i }),
+                alias: Some(ident.clone()),
+            });
         }
         Ok(())
     }
@@ -1218,6 +1258,8 @@ mod tests {
             "select distinct a.* from a as a(a,b), b as b(b,c), c as c(c, d) cross join (d as d(d, e) cross join (f as f(f, h) cross join lateral(select e.e from e as e(e, f))))",
             "select distinct a.* from a as a(a,b), b as b(b,c), c as c(c, d) cross join (d as d(d, e) cross join (f as f(f, h) cross join lateral(select a.a, b.b, c.c, d.d, e.e, f.f from e as e(e, f))))",
             "select distinct a.* from a as a(a,b), b as b(b,c), c as c(c, d) cross join (d as d(d, e) cross join (f as f(f, h) cross join lateral(select a.*, b.*, c.*, d.*, e.*, f.* from e as e(e, f))))",
+            "select b from a as a(a,b), lateral(select * from (values(a.a)))",
+            "select b from a as a(a,b), lateral(select * from (values(a.a)) as b(x))",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

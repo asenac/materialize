@@ -469,7 +469,65 @@ impl<'a> ModelGeneratorImpl<'a> {
         match body {
             SetExpr::Select(select) => self.process_select(&*select, query_box, context),
             SetExpr::Values(values) => self.process_values(&*values, query_box, context),
-            _ => Err(format!("@todo unsupported stuff")),
+            SetExpr::Query(query) => {
+                let box_id = self.process_query(&*query, Some(context))?;
+                let _ = self
+                    .model
+                    .make_quantifier(QuantifierType::Foreach, box_id, query_box);
+                self.model
+                    .get_box(query_box)
+                    .borrow_mut()
+                    .add_all_input_columns(self.model);
+                Ok(())
+            }
+            SetExpr::SetOperation {
+                op,
+                all,
+                left,
+                right,
+            } => {
+                let box_type = match op {
+                    sql_parser::ast::SetOperator::Union => BoxType::Union,
+                    sql_parser::ast::SetOperator::Intersect => BoxType::Intersect,
+                    sql_parser::ast::SetOperator::Except => BoxType::Except,
+                };
+                let box_id = self.model.make_box(box_type);
+                let left_box = {
+                    let left_box = self.model.make_select_box();
+                    let mut child_context =
+                        NameResolutionContext::new(left_box, context.parent_context);
+                    self.process_query_body(&**left, left_box, &mut child_context)?;
+                    let _ = self
+                        .model
+                        .make_quantifier(QuantifierType::Foreach, left_box, box_id);
+                    left_box
+                };
+
+                let right_box = {
+                    let right_box = self.model.make_select_box();
+                    let mut child_context =
+                        NameResolutionContext::new(right_box, context.parent_context);
+                    self.process_query_body(&**right, right_box, &mut child_context)?;
+                    let _ = self
+                        .model
+                        .make_quantifier(QuantifierType::Foreach, right_box, box_id);
+                    right_box
+                };
+
+                if !*all {
+                    self.model.get_box(box_id).borrow_mut().distinct = DistinctOperation::Enforce;
+                }
+                // @todo add columns from the left box
+
+                let _ = self
+                    .model
+                    .make_quantifier(QuantifierType::Foreach, box_id, query_box);
+                self.model
+                    .get_box(query_box)
+                    .borrow_mut()
+                    .add_all_input_columns(self.model);
+                Ok(())
+            }
         }
     }
 
@@ -1260,6 +1318,8 @@ mod tests {
             "select distinct a.* from a as a(a,b), b as b(b,c), c as c(c, d) cross join (d as d(d, e) cross join (f as f(f, h) cross join lateral(select a.*, b.*, c.*, d.*, e.*, f.* from e as e(e, f))))",
             "select b from a as a(a,b), lateral(select * from (values(a.a)))",
             "select b from a as a(a,b), lateral(select * from (values(a.a)) as b(x))",
+            "select b from a as a(a,b) union select b from b as b(a, b)",
+            "select b from a as a(a,b) union all select b from b as b(a, b)",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

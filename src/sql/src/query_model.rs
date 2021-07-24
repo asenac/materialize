@@ -724,9 +724,17 @@ impl<'a> ModelGeneratorImpl<'a> {
                 subquery,
                 alias,
             } => {
+                // For lateral join operands, the current context is put in
+                // lateral mode and passed as the parent context of the
+                // derived relation.
                 let prev_lateral_flag = context.is_lateral;
                 context.is_lateral = *lateral;
-                let box_id = self.process_query(&subquery, Some(context))?;
+                let parent_context = if *lateral {
+                    Some(&*context)
+                } else {
+                    context.parent_context.clone()
+                };
+                let box_id = self.process_query(&subquery, parent_context)?;
                 context.is_lateral = prev_lateral_flag;
 
                 (box_id, true, alias.clone())

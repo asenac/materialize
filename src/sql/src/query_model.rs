@@ -606,8 +606,6 @@ impl<'a> ModelGeneratorImpl<'a> {
                 .add_predicate(Box::new(predicate));
         }
 
-        // @todo grouping, having, distinct
-
         if is_grouping {
             let mut grouping_key = Vec::new();
             for key_item in select.group_by.iter() {

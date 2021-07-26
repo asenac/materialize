@@ -464,7 +464,7 @@ impl<'a> ModelGeneratorImpl<'a> {
             let mut key = Vec::new();
             for key_item in query.order_by.iter() {
                 // @todo direction
-                let expr = self.process_expr(&key_item.expr, &current_context)?;
+                let expr = self.process_expr(&key_item.expr, &current_context, Some(box_id))?;
                 key.push(Box::new(expr));
             }
 
@@ -599,7 +599,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         self.process_from_clause(&select.from, join_box, &mut join_context)?;
 
         if let Some(selection) = &select.selection {
-            let predicate = self.process_expr(&selection, &join_context)?;
+            let predicate = self.process_expr(&selection, &join_context, Some(join_box))?;
             self.model
                 .get_box(join_box)
                 .borrow_mut()
@@ -609,7 +609,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         if is_grouping {
             let mut grouping_key = Vec::new();
             for key_item in select.group_by.iter() {
-                let key_item = self.process_expr(&key_item, &join_context)?;
+                let key_item = self.process_expr(&key_item, &join_context, Some(join_box))?;
                 let alias = self.get_expression_alias(&key_item);
                 // ensure the key is projected by the input box of the grouping
                 let key_position = self
@@ -665,7 +665,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         context.merge_quantifiers(base_quantifiers.into_iter());
 
         if let Some(having) = &select.having {
-            let predicate = self.process_expr(having, context)?;
+            let predicate = self.process_expr(having, context, Some(query_box))?;
             self.model
                 .get_box(query_box)
                 .borrow_mut()
@@ -732,7 +732,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                     }
                 }
                 ast::SelectItem::Expr { expr, alias } => {
-                    let expr = self.process_expr(expr, context)?;
+                    let expr = self.process_expr(expr, context, Some(query_box))?;
                     let alias = if let Some(alias) = alias {
                         Some(alias.clone())
                     } else {
@@ -977,7 +977,7 @@ impl<'a> ModelGeneratorImpl<'a> {
     ) -> Result<(), String> {
         match constraint {
             JoinConstraint::On(expr) => {
-                let expr = self.process_expr(expr, context)?;
+                let expr = self.process_expr(expr, context, Some(join_id))?;
                 let join = self.model.get_box(join_id);
                 let mut mut_join = join.borrow_mut();
                 mut_join.add_predicate(Box::new(expr));
@@ -998,7 +998,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         for values in values.0.iter() {
             let mut row = Vec::with_capacity(values.len());
             for value in values.iter() {
-                let expr = self.process_expr(value, context)?;
+                let expr = self.process_expr(value, context, Some(query_box))?;
                 row.push(Box::new(expr));
             }
             rows.push(row);
@@ -1031,11 +1031,39 @@ impl<'a> ModelGeneratorImpl<'a> {
         &mut self,
         expr: &sql_parser::ast::Expr<Raw>,
         context: &NameResolutionContext,
+        join_id: Option<BoxId>,
     ) -> Result<Expr, String> {
         use sql_parser::ast;
         match expr {
             ast::Expr::Identifier(id) => Ok(context.resolve_column(&self.model, id)?),
+            ast::Expr::Subquery(query) => {
+                let quantifier_id =
+                    self.process_subquery(query, context, &join_id, QuantifierType::Scalar)?;
+                // @todo multi-column scalar subqueries
+                Ok(Expr::ColumnReference(ColumnReference {
+                    quantifier_id,
+                    position: 0,
+                }))
+            }
             _ => Err(format!("unsupported stuff")),
+        }
+    }
+
+    fn process_subquery(
+        &mut self,
+        query: &sql_parser::ast::Query<Raw>,
+        context: &NameResolutionContext,
+        join_id: &Option<BoxId>,
+        quantifier_type: QuantifierType,
+    ) -> Result<QuantifierId, String> {
+        if let Some(join_id) = join_id {
+            let subquery_box = self.process_query(query, Some(context))?;
+            Ok(self
+                .model
+                .make_quantifier(quantifier_type, subquery_box, *join_id))
+        } else {
+            // @todo what context?
+            Err(format!("subqueries are not supported within this context"))
         }
     }
 
@@ -1526,6 +1554,7 @@ mod tests {
             "select a.b from a as a(a,b) left join b as b(b, c) on a.a",
             "select a.b from a as a(a,b) right join b as b(b, c) on a.a",
             "select a.b from a as a(a,b) full join b as b(b, c) on a.a",
+            "select a.b from a as a(a,b) full join b as b(b, c) on (select a.a from c as c(c, d))",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

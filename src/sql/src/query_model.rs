@@ -485,8 +485,8 @@ impl<'a> ModelGeneratorImpl<'a> {
     ) -> Result<(), String> {
         // @todo CTEs can see previous CTEs within the same list
         for cte in ctes.iter() {
-            let cte_id = self.process_query(&cte.query, context.parent_context.clone())?;
-            // @todo add intermediate box with column aliases
+            let mut cte_id = self.process_query(&cte.query, context.parent_context.clone())?;
+            cte_id = self.add_column_aliases(cte_id, &cte.alias.columns);
             context.ctes.insert(cte.alias.name.clone(), cte_id);
         }
         Ok(())
@@ -932,23 +932,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                 return Err(format!("column number mismatch"));
             }
             // add intermediate select box with the column aliases
-            if !alias.columns.is_empty() {
-                let select_id = self.model.make_select_box();
-                let quantifier_id =
-                    self.model
-                        .make_quantifier(QuantifierType::Foreach, box_id, select_id);
-                let mut select = self.model.get_box(select_id).borrow_mut();
-                for (position, c) in alias.columns.iter().enumerate() {
-                    select.columns.push(Column {
-                        expr: Expr::ColumnReference(ColumnReference {
-                            quantifier_id,
-                            position,
-                        }),
-                        alias: Some(c.clone()),
-                    });
-                }
-                box_id = select_id;
-            }
+            box_id = self.add_column_aliases(box_id, &alias.columns);
         }
 
         // Add the box to the current join with the given type
@@ -1064,6 +1048,30 @@ impl<'a> ModelGeneratorImpl<'a> {
         } else {
             // @todo what context?
             Err(format!("subqueries are not supported within this context"))
+        }
+    }
+
+    /// Add an intermediate select box on top of the given input box for applying
+    /// the given column aliases
+    fn add_column_aliases(&mut self, input_box: BoxId, columns: &Vec<Ident>) -> BoxId {
+        if !columns.is_empty() {
+            let select_id = self.model.make_select_box();
+            let quantifier_id =
+                self.model
+                    .make_quantifier(QuantifierType::Foreach, input_box, select_id);
+            let mut select = self.model.get_box(select_id).borrow_mut();
+            for (position, c) in columns.iter().enumerate() {
+                select.columns.push(Column {
+                    expr: Expr::ColumnReference(ColumnReference {
+                        quantifier_id,
+                        position,
+                    }),
+                    alias: Some(c.clone()),
+                });
+            }
+            select_id
+        } else {
+            input_box
         }
     }
 
@@ -1292,7 +1300,7 @@ impl<'a> NameResolutionContext<'a> {
     /// Given a column reference expression, returns another column reference
     /// expression that points to one of the quantifiers in the owner box of
     /// this context. Adds the given column to the projection of all the
-    /// intermediate boxex.
+    /// intermediate boxes.
     fn pullup_column_reference(&self, model: &Model, expr: Expr) -> Result<Expr, String> {
         match expr {
             Expr::ColumnReference(mut c) => {
@@ -1533,7 +1541,7 @@ mod tests {
             "select * from a",
             "select * from a, b, c",
             "select * from a, (b cross join c)",
-            // "with b(b) as (select column1 from a) select b from b, c",
+            "with b(b) as (select column1 from a) select b.b, c.b as a from b as b, b as c",
             "select * from a inner join b on a.column1, c",
             "select * from a, lateral(select * from b inner join c on a.column1)",
             "select * from a as a(a,b), lateral(select * from b inner join c on a.a)",

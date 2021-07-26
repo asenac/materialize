@@ -564,7 +564,6 @@ impl<'a> ModelGeneratorImpl<'a> {
                 if !*all {
                     self.model.get_box(box_id).borrow_mut().distinct = DistinctOperation::Enforce;
                 }
-                // @todo add columns from the left box
 
                 let _ = self
                     .model

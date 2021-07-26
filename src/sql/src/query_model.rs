@@ -174,6 +174,15 @@ impl QueryBox {
         position
     }
 
+    fn find_column(&self, expr: &Expr) -> Option<usize> {
+        for (position, c) in self.columns.iter().enumerate() {
+            if c.expr == *expr {
+                return Some(position);
+            }
+        }
+        None
+    }
+
     /// Add all columns from the non-subquery input quantifiers of the box to the
     /// projection of the box.
     fn add_all_input_columns(&mut self, model: &Model) {
@@ -567,16 +576,99 @@ impl<'a> ModelGeneratorImpl<'a> {
         query_box: BoxId,
         context: &mut NameResolutionContext,
     ) -> Result<(), String> {
-        self.process_from_clause(&select.from, query_box, context)?;
+        // @todo collect aggregates
+        let is_grouping = !select.group_by.is_empty() || select.having.is_some();
+
+        let (join_box, mut join_context) = if is_grouping {
+            let join_box = self.model.make_select_box();
+            (
+                join_box,
+                NameResolutionContext::new(join_box, context.parent_context.clone()),
+            )
+        } else {
+            (query_box, context.clone())
+        };
+
+        self.process_from_clause(&select.from, join_box, &mut join_context)?;
+
         if let Some(selection) = &select.selection {
-            let predicate = self.process_expr(&selection, context)?;
+            let predicate = self.process_expr(&selection, &join_context)?;
+            self.model
+                .get_box(join_box)
+                .borrow_mut()
+                .add_predicate(Box::new(predicate));
+        }
+
+        // @todo grouping, having, distinct
+
+        if is_grouping {
+            let mut grouping_key = Vec::new();
+            for key_item in select.group_by.iter() {
+                let key_item = self.process_expr(&key_item, &join_context)?;
+                let alias = self.get_expression_alias(&key_item);
+                // ensure the key is projected by the input box of the grouping
+                let key_position = self
+                    .model
+                    .get_box(join_box)
+                    .borrow_mut()
+                    .add_column_if_not_exists(key_item, alias);
+                grouping_key.push(key_position);
+            }
+
+            // Note: the grouping box is created temporarily as a select box so
+            // that we can create the input quantifier that is referenced by
+            // the grouping key
+            let grouping_box = self.model.make_select_box();
+            let quantifier_id =
+                self.model
+                    .make_quantifier(QuantifierType::Foreach, join_box, grouping_box);
+
+            let grouping_key = grouping_key
+                .iter()
+                .map(|position| {
+                    Box::new(Expr::ColumnReference(ColumnReference {
+                        quantifier_id,
+                        position: *position,
+                    }))
+                })
+                .collect::<Vec<_>>();
+
+            {
+                let mut grouping_box = self.model.get_box(grouping_box).borrow_mut();
+
+                // add all the columns in the grouping key to the projection of the
+                // grouping box
+                for key_item in grouping_key.iter() {
+                    grouping_box.columns.push(Column {
+                        expr: (**key_item).clone(),
+                        alias: self.get_expression_alias(&**key_item),
+                    });
+                }
+
+                // @todo add all the columns from the join_box that functionally depend on
+                // the columns in the grouping key to the projection of the grouping_box
+                grouping_box.box_type = BoxType::Grouping(Grouping { key: grouping_key });
+            }
+
+            // make the grouping box the input of the parent select box
+            let _ = self
+                .model
+                .make_quantifier(QuantifierType::Foreach, grouping_box, query_box);
+        }
+
+        let base_quantifiers = join_context.quantifiers;
+        context.merge_quantifiers(base_quantifiers.into_iter());
+
+        if let Some(having) = &select.having {
+            let predicate = self.process_expr(having, context)?;
             self.model
                 .get_box(query_box)
                 .borrow_mut()
                 .add_predicate(Box::new(predicate));
         }
-        // @todo grouping, having, distinct
+
         self.process_projection(&select.projection, query_box, context)?;
+
         if let Some(distinct) = &select.distinct {
             match distinct {
                 sql_parser::ast::Distinct::EntireRow => {
@@ -638,10 +730,8 @@ impl<'a> ModelGeneratorImpl<'a> {
                     let expr = self.process_expr(expr, context)?;
                     let alias = if let Some(alias) = alias {
                         Some(alias.clone())
-                    } else if let Expr::ColumnReference(c) = &expr {
-                        self.get_column_alias(c.quantifier_id, c.position)
                     } else {
-                        None
+                        self.get_expression_alias(&expr)
                     };
                     self.model
                         .get_box(query_box)
@@ -953,6 +1043,14 @@ impl<'a> ModelGeneratorImpl<'a> {
         Ok(name)
     }
 
+    fn get_expression_alias(&self, expr: &Expr) -> Option<Ident> {
+        if let Expr::ColumnReference(c) = expr {
+            self.get_column_alias(c.quantifier_id, c.position)
+        } else {
+            None
+        }
+    }
+
     /// return the column alias/name of the column projected in the given position
     /// by the input box of the given quantifier
     fn get_column_alias(&self, quantifier_id: QuantifierId, position: usize) -> Option<Ident> {
@@ -962,6 +1060,7 @@ impl<'a> ModelGeneratorImpl<'a> {
     }
 }
 
+#[derive(Clone)]
 struct NameResolutionContext<'a> {
     owner_box: BoxId,
     /// leaf quantifiers for resolving column names
@@ -1175,15 +1274,31 @@ impl<'a> NameResolutionContext<'a> {
                         *parent_box.ranging_quantifiers.iter().next().unwrap()
                     };
 
-                    // @todo special case for grouping boxes
                     let alias = {
                         let b = model.get_box(q.input_box).borrow();
                         b.columns[c.position].alias.clone()
                     };
-                    c.position = model
-                        .get_box(q.parent_box)
-                        .borrow_mut()
-                        .add_column_if_not_exists(Expr::ColumnReference(c.clone()), alias);
+                    c.position = {
+                        let mut parent_box = model.get_box(q.parent_box).borrow_mut();
+                        let expr = Expr::ColumnReference(c.clone());
+                        match &parent_box.box_type {
+                            BoxType::Select(_) | BoxType::OuterJoin(_) => {
+                                parent_box.add_column_if_not_exists(expr, alias)
+                            }
+                            BoxType::Grouping(_) => {
+                                // @todo special case for grouping boxes.
+                                if let Some(position) = parent_box.find_column(&expr) {
+                                    position
+                                } else {
+                                    return Err(format!(
+                                        "{} doesn't appear in the GROUP BY clause",
+                                        expr
+                                    ));
+                                }
+                            }
+                            _ => panic!("unexpected box type"),
+                        }
+                    };
                     c.quantifier_id = parent_q_id;
                 }
                 Ok(Expr::ColumnReference(c.clone()))
@@ -1310,6 +1425,17 @@ impl DotGenerator {
                     }
                 }
             }
+            BoxType::Grouping(grouping) => {
+                if !grouping.key.is_empty() {
+                    r.push_str("| GROUP BY: ");
+                    for (i, key_item) in grouping.key.iter().enumerate() {
+                        if i > 0 {
+                            r.push_str(", ");
+                        }
+                        r.push_str(&format!("{}", key_item));
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -1383,6 +1509,8 @@ mod tests {
             "select b from a as a(a,b) union select b from b as b(a, b)",
             "select b from a as a(a,b) union all select b from b as b(a, b)",
             "select b from a as a(a,b) order by a",
+            "select b from a as a(a,b) group by b",
+            "select b from a as a(a,b) group by b having b",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

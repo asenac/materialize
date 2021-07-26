@@ -497,9 +497,23 @@ impl<'a> ModelGeneratorImpl<'a> {
                     let mut child_context =
                         NameResolutionContext::new(left_box, context.parent_context);
                     self.process_query_body(&**left, left_box, &mut child_context)?;
-                    let _ = self
-                        .model
-                        .make_quantifier(QuantifierType::Foreach, left_box, box_id);
+                    let left_q_id =
+                        self.model
+                            .make_quantifier(QuantifierType::Foreach, left_box, box_id);
+
+                    // project all the columns from the left side
+                    let b_left_box = self.model.get_box(left_box).borrow();
+                    let mut set_box = self.model.get_box(box_id).borrow_mut();
+                    for (position, c) in b_left_box.columns.iter().enumerate() {
+                        let expr = Expr::ColumnReference(ColumnReference {
+                            quantifier_id: left_q_id,
+                            position,
+                        });
+                        set_box.columns.push(Column {
+                            expr,
+                            alias: c.alias.clone(),
+                        });
+                    }
                     left_box
                 };
 
@@ -606,14 +620,18 @@ impl<'a> ModelGeneratorImpl<'a> {
                 }
                 ast::SelectItem::Expr { expr, alias } => {
                     let expr = self.process_expr(expr, context)?;
+                    let alias = if let Some(alias) = alias {
+                        Some(alias.clone())
+                    } else if let Expr::ColumnReference(c) = &expr {
+                        self.get_column_alias(c.quantifier_id, c.position)
+                    } else {
+                        None
+                    };
                     self.model
                         .get_box(query_box)
                         .borrow_mut()
                         .columns
-                        .push(Column {
-                            expr,
-                            alias: alias.clone(),
-                        });
+                        .push(Column { expr, alias });
                 }
             }
         }
@@ -922,6 +940,14 @@ impl<'a> ModelGeneratorImpl<'a> {
             _ => return Err(format!("unsupported")),
         };
         Ok(name)
+    }
+
+    /// return the column alias/name of the column projected in the given position
+    /// by the input box of the given quantifier
+    fn get_column_alias(&self, quantifier_id: QuantifierId, position: usize) -> Option<Ident> {
+        let q = self.model.get_quantifier(quantifier_id).borrow();
+        let ib = self.model.get_box(q.input_box).borrow();
+        ib.columns[position].alias.clone()
     }
 }
 

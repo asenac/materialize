@@ -609,8 +609,8 @@ impl<'a> ModelGeneratorImpl<'a> {
                     alias: _,
                 } => {
                     // @todo qualified tables
-                    if let Some((context, quantifier_id)) = context
-                        .resolve_quantifier_recursively(self.model, table_name.last().unwrap())
+                    if let Some((context, quantifier_id)) =
+                        context.resolve_quantifier(self.model, table_name.last().unwrap())
                     {
                         let input_box_id =
                             self.model.get_quantifier(quantifier_id).borrow().input_box;
@@ -716,8 +716,7 @@ impl<'a> ModelGeneratorImpl<'a> {
             };
             let join_id = self.model.make_box(box_type);
 
-            let mut join_context =
-                NameResolutionContext::for_join(join_id, context.parent_context.clone(), context);
+            let mut join_context = NameResolutionContext::for_join(join_id, context);
 
             // keep processing the join tree recursively
             let _left_q = self.process_join_tree(
@@ -791,11 +790,7 @@ impl<'a> ModelGeneratorImpl<'a> {
             }
             TableFactor::NestedJoin { join, alias } => {
                 let join_id = self.model.make_select_box();
-                let mut join_context = NameResolutionContext::for_join(
-                    join_id,
-                    context.parent_context.clone(),
-                    context,
-                );
+                let mut join_context = NameResolutionContext::for_join(join_id, context);
 
                 self.process_comma_join_operand(join, &mut join_context)?;
 
@@ -993,16 +988,13 @@ impl<'a> NameResolutionContext<'a> {
         }
     }
 
-    fn for_join(
-        join_box: BoxId,
-        parent_context: Option<&'a NameResolutionContext<'a>>,
-        sibling_context: &'a NameResolutionContext<'a>,
-    ) -> Self {
+    /// Creates a new context for an intermediate join.
+    fn for_join(join_box: BoxId, sibling_context: &'a NameResolutionContext<'a>) -> Self {
         Self {
             owner_box: join_box,
             quantifiers: Vec::new(),
             ctes: HashMap::new(),
-            parent_context,
+            parent_context: sibling_context.parent_context.clone(),
             sibling_context: Some(sibling_context),
             is_lateral: false,
         }
@@ -1034,6 +1026,7 @@ impl<'a> NameResolutionContext<'a> {
             }
 
             if current.is_lateral {
+                // move laterally first
                 let mut sibling_ctx = current.sibling_context.clone();
                 while let Some(sibling) = sibling_ctx {
                     if let Some(expr) = sibling.resolve_column_in_context(model, name)? {
@@ -1049,6 +1042,9 @@ impl<'a> NameResolutionContext<'a> {
         Err(format!("column {:?} could not be resolved", name))
     }
 
+    /// Resolve the column identified by name against the quantifiers in this context.
+    /// Returns a column reference expression if found. Checks whether the column name
+    /// is ambiguous within the current context.
     fn resolve_column_in_context(
         &self,
         model: &Model,
@@ -1083,6 +1079,8 @@ impl<'a> NameResolutionContext<'a> {
         Ok(expr)
     }
 
+    /// Checks whether the column name is ambiguous within the current quantifier. Note:
+    /// a derived relation could expose several columns with the same alias.
     fn resolve_column_in_quantifier(
         &self,
         model: &Model,
@@ -1116,6 +1114,7 @@ impl<'a> NameResolutionContext<'a> {
         }
     }
 
+    /// @todo support qualified quantifiers
     fn resolve_quantifier_in_context(&self, model: &Model, name: &Ident) -> Option<QuantifierId> {
         for q_id in self.quantifiers.iter() {
             let q = model.get_quantifier(*q_id).borrow();
@@ -1130,7 +1129,7 @@ impl<'a> NameResolutionContext<'a> {
     }
 
     /// @todo support qualified quantifiers
-    fn resolve_quantifier_recursively(
+    fn resolve_quantifier(
         &'a self,
         model: &Model,
         name: &Ident,
@@ -1143,6 +1142,7 @@ impl<'a> NameResolutionContext<'a> {
             }
 
             if current.is_lateral {
+                // move laterally first
                 let mut sibling_ctx = current.sibling_context.clone();
                 while let Some(sibling) = sibling_ctx {
                     if let Some(q_id) = sibling.resolve_quantifier_in_context(model, name) {
@@ -1157,6 +1157,10 @@ impl<'a> NameResolutionContext<'a> {
         None
     }
 
+    /// Given a column reference expression, returns another column reference
+    /// expression that points to one of the quantifiers in the owner box of
+    /// this context. Adds the given column to the projection of all the
+    /// intermediate boxex.
     fn pullup_column_reference(&self, model: &Model, expr: Expr) -> Result<Expr, String> {
         match expr {
             Expr::ColumnReference(mut c) => {

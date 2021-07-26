@@ -1523,6 +1523,9 @@ mod tests {
             "select b from a as a(a,b) order by a",
             "select b from a as a(a,b) group by b",
             "select b from a as a(a,b) group by b having b",
+            "select a.b from a as a(a,b) left join b as b(b, c) on a.a",
+            "select a.b from a as a(a,b) right join b as b(b, c) on a.a",
+            "select a.b from a as a(a,b) full join b as b(b, c) on a.a",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

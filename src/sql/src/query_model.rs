@@ -163,6 +163,14 @@ impl QueryBox {
         }
     }
 
+    fn get_predicates<'a>(&'a self) -> Option<&'a Vec<Box<Expr>>> {
+        match &self.box_type {
+            BoxType::Select(select) => Some(&select.predicates),
+            BoxType::OuterJoin(outer_join) => Some(&outer_join.predicates),
+            _ => None,
+        }
+    }
+
     fn add_column_if_not_exists(&mut self, expr: Expr, alias: Option<Ident>) -> usize {
         for (position, c) in self.columns.iter().enumerate() {
             if c.expr == expr {
@@ -1437,6 +1445,13 @@ impl DotGenerator {
                 }
             }
             _ => {}
+        }
+
+        // @todo predicates as arrows
+        if let Some(predicates) = b.get_predicates() {
+            for predicate in predicates.iter() {
+                r.push_str(&format!("| {}", predicate));
+            }
         }
 
         r

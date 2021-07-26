@@ -889,6 +889,8 @@ impl<'a> ModelGeneratorImpl<'a> {
 
                 self.process_comma_join_operand(join, &mut join_context)?;
 
+                // if the nested join doesn't have an alias, its base tables are
+                // visible from the parent join scope
                 if alias.is_none() {
                     let child_quantifiers = join_context.quantifiers;
                     context.merge_quantifiers(child_quantifiers.into_iter());

@@ -442,7 +442,22 @@ impl<'a> ModelGeneratorImpl<'a> {
         let mut current_context = NameResolutionContext::new(box_id, parent_context);
         self.add_ctes_to_context(&query.ctes, &mut current_context)?;
         self.process_query_body(&query.body, box_id, &mut current_context)?;
-        // @todo order by, limit, offset
+        // @todo limit, offset
+        if !query.order_by.is_empty() {
+            let mut key = Vec::new();
+            for key_item in query.order_by.iter() {
+                // @todo direction
+                let expr = self.process_expr(&key_item.expr, &current_context)?;
+                key.push(Box::new(expr));
+            }
+
+            let mut select_box = self.model.get_box(box_id).borrow_mut();
+            if let BoxType::Select(select) = &mut select_box.box_type {
+                select.order_key = Some(key);
+            } else {
+                panic!();
+            }
+        }
         Ok(box_id)
     }
 
@@ -460,6 +475,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         Ok(())
     }
 
+    /// Fills the given select box with the body.
     fn process_query_body(
         &mut self,
         body: &SetExpr<Raw>,
@@ -1277,6 +1293,22 @@ impl DotGenerator {
             }
         }
 
+        match &b.box_type {
+            BoxType::Select(select) => {
+                if let Some(order_key) = &select.order_key {
+                    r.push_str("| ORDER BY: ");
+                    for (i, key_item) in order_key.iter().enumerate() {
+                        if i > 0 {
+                            r.push_str(", ");
+                        }
+                        // @todo direction
+                        r.push_str(&format!("{}", key_item));
+                    }
+                }
+            }
+            _ => {}
+        }
+
         r
     }
 
@@ -1346,6 +1378,7 @@ mod tests {
             "select b from a as a(a,b), lateral(select * from (values(a.a)) as b(x))",
             "select b from a as a(a,b) union select b from b as b(a, b)",
             "select b from a as a(a,b) union all select b from b as b(a, b)",
+            "select b from a as a(a,b) order by a",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

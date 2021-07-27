@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_variables)]
 
 use std::cell::{Ref, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -84,12 +84,20 @@ impl Model {
     }
 
     /// Visit boxes in the query graph in pre-order
-    fn visit_pre_boxes<F, E>(&self, mut f: F) -> Result<(), E>
+    fn visit_pre_boxes<F, E>(&self, f: &mut F) -> Result<(), E>
+    where
+        F: FnMut(&RefCell<QueryBox>) -> Result<(), E>,
+    {
+        self.visit_pre_boxes_in_subgraph(f, self.top_box)
+    }
+
+    /// Visit boxes in the query graph in pre-order
+    fn visit_pre_boxes_in_subgraph<F, E>(&self, f: &mut F, start_box: BoxId) -> Result<(), E>
     where
         F: FnMut(&RefCell<QueryBox>) -> Result<(), E>,
     {
         let mut visited = HashSet::new();
-        let mut stack = vec![self.top_box];
+        let mut stack = vec![start_box];
         while !stack.is_empty() {
             let box_id = stack.pop().unwrap();
             if visited.insert(box_id) {
@@ -213,6 +221,57 @@ impl QueryBox {
                 }
             }
         }
+    }
+
+    fn visit_expressions<F, E>(&self, f: &mut F) -> Result<(), E>
+    where
+        F: FnMut(&Expr) -> Result<(), E>,
+    {
+        for c in self.columns.iter() {
+            f(&c.expr)?;
+        }
+        match &self.box_type {
+            BoxType::Select(select) => {
+                for p in select.predicates.iter() {
+                    f(p)?;
+                }
+                if let Some(order_key) = &select.order_key {
+                    for p in order_key.iter() {
+                        f(p)?;
+                    }
+                }
+                if let Some(limit) = &select.limit {
+                    f(limit)?;
+                }
+                if let Some(offset) = &select.offset {
+                    f(offset)?;
+                }
+            }
+            BoxType::OuterJoin(outer_join) => {
+                for p in outer_join.predicates.iter() {
+                    f(p)?;
+                }
+            }
+            BoxType::Grouping(grouping) => {
+                for p in grouping.key.iter() {
+                    f(p)?;
+                }
+            }
+            BoxType::Values(values) => {
+                for row in values.rows.iter() {
+                    for value in row.iter() {
+                        f(value)?;
+                    }
+                }
+            }
+            BoxType::TableFunction(table_function) => {
+                for p in table_function.parameters.iter() {
+                    f(p)?;
+                }
+            }
+            BoxType::Except | BoxType::Union | BoxType::Intersect | BoxType::BaseTable(_) => {}
+        }
+        Ok(())
     }
 }
 
@@ -385,7 +444,24 @@ impl fmt::Display for Expr {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+impl Expr {
+    fn collect_column_references_from_context(
+        &self,
+        context: &QuantifierSet,
+        column_refs: &mut HashSet<ColumnReference>,
+    ) {
+        match &self {
+            Expr::ColumnReference(c) => {
+                if context.contains(&c.quantifier_id) {
+                    column_refs.insert(c.clone());
+                }
+            }
+            Expr::BaseColumn(_) => {}
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 struct ColumnReference {
     quantifier_id: QuantifierId,
     position: usize,
@@ -424,6 +500,7 @@ struct BaseColumn {
 // Model generator
 //
 
+use itertools::Itertools;
 use sql_parser::ast::{
     Cte, Ident, Query, Raw, SelectStatement, SetExpr, TableFactor, TableWithJoins,
 };
@@ -1486,6 +1563,8 @@ impl DotGenerator {
                 ));
             }
 
+            self.add_correlation_info(model, &b);
+
             self.dec();
             self.new_line("}");
             self.dec();
@@ -1571,6 +1650,49 @@ impl DotGenerator {
         }
 
         r
+    }
+
+    fn add_correlation_info(&mut self, model: &Model, b: &QueryBox) {
+        let mut correlation_info: BTreeMap<QuantifierId, Vec<QuantifierId>> = BTreeMap::new();
+        for q_id in b.quantifiers.iter() {
+            // collect the column references from the current context within
+            // the subgraph under the current quantifier
+            let mut column_refs = HashSet::new();
+            let mut f = |inner_box: &RefCell<QueryBox>| -> Result<(), ()> {
+                inner_box
+                    .borrow()
+                    .visit_expressions(&mut |expr: &Expr| -> Result<(), ()> {
+                        expr.collect_column_references_from_context(
+                            &b.quantifiers,
+                            &mut column_refs,
+                        );
+                        Ok(())
+                    })
+            };
+            let q = model.get_quantifier(*q_id).borrow();
+            model
+                .visit_pre_boxes_in_subgraph(&mut f, q.input_box)
+                .unwrap();
+            // collect the unique quantifiers referenced by the subgraph
+            // under the current quantifier
+            correlation_info.insert(
+                q.id,
+                column_refs
+                    .iter()
+                    .map(|c| c.quantifier_id)
+                    .unique()
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        for (correlated_q, quantifiers) in correlation_info.iter() {
+            for q in quantifiers.iter() {
+                self.new_line(&format!(
+                    "Q{0} -> Q{1} [ label = \"correlation\", style = filled, color = red ]",
+                    correlated_q, q
+                ));
+            }
+        }
     }
 
     fn get_quantifier_alias(q: &Quantifier) -> String {

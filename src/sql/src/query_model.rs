@@ -759,8 +759,17 @@ impl<'a> ModelGeneratorImpl<'a> {
         query_box: BoxId,
         context: &mut NameResolutionContext,
     ) -> Result<(), String> {
-        for twj in from.iter() {
-            self.process_comma_join_operand(&twj, context)?;
+        if from.is_empty() {
+            let values_id = self
+                .model
+                .make_box(BoxType::Values(Values { rows: vec![vec![]] }));
+            let _ = self
+                .model
+                .make_quantifier(QuantifierType::Foreach, values_id, query_box);
+        } else {
+            for twj in from.iter() {
+                self.process_comma_join_operand(&twj, context)?;
+            }
         }
         Ok(())
     }
@@ -1479,6 +1488,17 @@ impl DotGenerator {
                     }
                 }
             }
+            BoxType::Values(values) => {
+                for (i, row) in values.rows.iter().enumerate() {
+                    r.push_str(&format!("| ROW {}: ", i));
+                    for (i, value) in row.iter().enumerate() {
+                        if i > 0 {
+                            r.push_str(", ");
+                        }
+                        r.push_str(&format!("{}", value));
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -1556,6 +1576,7 @@ mod tests {
             "select distinct a.* from a as a(a,b), b as b(b,c), c as c(c, d) cross join (d as d(d, e) cross join (f as f(f, h) cross join lateral(select a.*, b.*, c.*, d.*, e.*, f.* from e as e(e, f))))",
             "select b from a as a(a,b), lateral(select * from (values(a.a)))",
             "select b from a as a(a,b), lateral(select * from (values(a.a)) as b(x))",
+            "select b from a as a(a,b), lateral(select * from (values((select a.a))) as b(x))",
             "select b from a as a(a,b) union select b from b as b(a, b)",
             "select b from a as a(a,b) union all select b from b as b(a, b)",
             "select b from a as a(a,b) order by a",

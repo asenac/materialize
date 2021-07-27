@@ -471,6 +471,10 @@ impl<'a> ModelGeneratorImpl<'a> {
         self.add_ctes_to_context(&query.ctes, &mut current_context)?;
         self.process_query_body(&query.body, box_id, &mut current_context)?;
         // @todo limit, offset
+
+        // the projection of the box can be used for name resolution
+        current_context.enable_box_projection();
+
         if !query.order_by.is_empty() {
             let mut key = Vec::new();
             for key_item in query.order_by.iter() {
@@ -1136,6 +1140,24 @@ struct NameResolutionContext<'a> {
     sibling_context: Option<&'a NameResolutionContext<'a>>,
     /// enables/disables the visibility of the sibling scope
     is_lateral: bool,
+    /// Whether the projection of the owner box must be used for resolving unqualified
+    /// column names.
+    ///
+    /// This exists to support the special behavior of scoping in intrusive
+    /// `ORDER BY` clauses. For example, in the following `SELECT` statement
+    ///
+    ///   CREATE TABLE t (a int, b)
+    ///   SELECT 'outer' AS a, b FROM t ORDER BY a
+    ///
+    /// even though there are two columns named `a` in scope in the ORDER BY
+    /// (one from `t` and one declared in the select list), the column declared
+    /// in the select list has priority. Remember that if there are two columns
+    /// named `a` that are both in the priority class, as in
+    ///
+    ///   SELECT 'outer' AS a, a FROM t ORDER BY a
+    ///
+    /// this still needs to generate an "ambiguous name" error.
+    use_box_projection: bool,
 }
 
 impl<'a> NameResolutionContext<'a> {
@@ -1147,6 +1169,7 @@ impl<'a> NameResolutionContext<'a> {
             parent_context,
             sibling_context: None,
             is_lateral: false,
+            use_box_projection: false,
         }
     }
 
@@ -1159,7 +1182,13 @@ impl<'a> NameResolutionContext<'a> {
             parent_context: sibling_context.parent_context.clone(),
             sibling_context: Some(sibling_context),
             is_lateral: false,
+            use_box_projection: false,
         }
+    }
+
+    /// Makes the projection of the box visible for name resolution.
+    fn enable_box_projection(&mut self) {
+        self.use_box_projection = true;
     }
 
     fn merge_quantifiers<I>(&mut self, quantifiers: I)
@@ -1223,6 +1252,23 @@ impl<'a> NameResolutionContext<'a> {
                             return Err(format!("ambiguous column name {:?}", name));
                         }
                         found = Some(expr);
+                    }
+                }
+
+                if self.use_box_projection {
+                    let owner_box = model.get_box(self.owner_box).borrow();
+                    for c in owner_box.columns.iter() {
+                        if let Some(alias) = &c.alias {
+                            if *alias == name[0] {
+                                if let Some(found) = &found {
+                                    if *found != c.expr {
+                                        return Err(format!("ambiguous column name {:?}", name));
+                                    }
+                                } else {
+                                    found = Some(c.expr.clone());
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1598,8 +1644,6 @@ mod tests {
             "select a.b from a as a(a,b) full join b as b(b, c) on a.a",
             "select a.b from a as a(a,b) full join b as b(b, c) on (select a.a from c as c(c, d))",
             "select a.* from (values((select column1 from b), (select column2 from c))) as a(a, b)",
-            // @todo this should fail with ambiguous column name error
-            "select b as a, a from a as a(a, b) order by a",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();
@@ -1621,7 +1665,7 @@ mod tests {
             // non-lateral derived tables must not see the sibling context
             "select b from a as a(a,b), (select * from (values(a.a)))",
             // this must fail with ambiguous column name error
-            // "select b as a, a from a as a(a, b) order by a",
+            "select b as a, a from a as a(a, b) order by a",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

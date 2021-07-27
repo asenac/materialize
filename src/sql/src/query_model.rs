@@ -1498,6 +1498,10 @@ impl<'a> NameResolutionContext<'a> {
     }
 }
 
+//
+// Dot generator
+//
+
 struct DotGenerator {
     output: String,
     indent: u32,
@@ -1731,12 +1735,177 @@ impl DotGenerator {
 }
 
 //
-// Dot generator
+// lowering
 //
+
+use repr::{RelationType, ScalarType};
+
+impl Model {
+    fn lower(&self) -> expr::MirRelationExpr {
+        let mut id_gen = expr::IdGen::default();
+        expr::MirRelationExpr::constant(vec![vec![]], RelationType::new(vec![])).let_in(
+            &mut id_gen,
+            |id_gen, get_outer| {
+                let empty = Vec::new();
+                self.get_box(self.top_box)
+                    .borrow()
+                    .applied_to(self, id_gen, get_outer, &empty)
+            },
+        )
+    }
+}
+
+impl QueryBox {
+    fn applied_to(
+        &self,
+        model: &Model,
+        id_gen: &mut expr::IdGen,
+        get_outer: expr::MirRelationExpr,
+        outer_projection: &Vec<ColumnReference>,
+    ) -> expr::MirRelationExpr {
+        use expr::MirRelationExpr as SR;
+        match &self.box_type {
+            BoxType::BaseTable(_) => get_outer.product(SR::Get {
+                // @todo get the global id from the metadata
+                id: expr::Id::Global(expr::GlobalId::User(0)),
+                typ: self.typ(model),
+            }),
+            BoxType::Select(select) => {
+                let correlation_info = self.correlation_info(model);
+                let (uncorrelated, correlated): (Vec<_>, Vec<_>) = correlation_info
+                    .iter()
+                    .partition(|(q_id, outer_col_refs)| outer_col_refs.is_empty());
+
+                if !correlated.is_empty() {
+                    panic!("correlated queries are not yet supported");
+                }
+
+                let oa = outer_projection.len();
+                let mut join_operands = Vec::new();
+                let mut join_col_map = outer_projection.clone();
+                let mut join_projection = (0..oa).collect::<Vec<_>>();
+                for (i, (q_id, _)) in uncorrelated.iter().enumerate() {
+                    let (join_operand, input_arity) = model
+                        .get_quantifier(**q_id)
+                        .borrow()
+                        .applied_to(model, id_gen, get_outer.clone(), outer_projection);
+                    join_operands.push(join_operand);
+                    join_projection.extend((0..input_arity).map(|c| oa * (i + 1) + c));
+                    join_col_map.extend((0..input_arity).map(|position| ColumnReference {
+                        quantifier_id: **q_id,
+                        position,
+                    }));
+                }
+
+                let mut product = SR::join(
+                    join_operands,
+                    (0..oa)
+                        .map(|i| (0..uncorrelated.len()).map(|o| (o, i)).collect())
+                        .collect(),
+                )
+                .project(join_projection)
+                .filter(select.predicates.iter().map(|p| p.lower(&join_col_map)))
+                .map(
+                    self.columns
+                        .iter()
+                        .map(|c| c.expr.lower(&join_col_map))
+                        .collect(),
+                )
+                .project((join_col_map.len()..join_col_map.len() + self.columns.len()).collect());
+
+                // @todo correlated operands
+                // @todo order by and limit
+
+                if let DistinctOperation::Enforce = &self.distinct {
+                    product = product.distinct();
+                }
+
+                product
+            }
+            _ => panic!(),
+        }
+    }
+
+    fn typ(&self, _model: &Model) -> repr::RelationType {
+        // @todo get the type information from the projection of the box
+        repr::RelationType::new(
+            (0..self.columns.len())
+                .map(|_| repr::ColumnType {
+                    nullable: true,
+                    scalar_type: ScalarType::String,
+                })
+                .collect(),
+        )
+    }
+
+    /// Correlation information of the quantifiers in this box
+    fn correlation_info(&self, model: &Model) -> BTreeMap<QuantifierId, HashSet<ColumnReference>> {
+        let mut correlation_info = BTreeMap::new();
+        for q_id in self.quantifiers.iter() {
+            let mut column_refs = HashSet::new();
+            let mut f = |inner_box: &RefCell<QueryBox>| -> Result<(), ()> {
+                inner_box
+                    .borrow()
+                    .visit_expressions(&mut |expr: &Expr| -> Result<(), ()> {
+                        expr.collect_column_references_from_context(
+                            &self.quantifiers,
+                            &mut column_refs,
+                        );
+                        Ok(())
+                    })
+            };
+            let q = model.get_quantifier(*q_id).borrow();
+            model
+                .visit_pre_boxes_in_subgraph(&mut f, q.input_box)
+                .unwrap();
+            correlation_info.insert(*q_id, column_refs);
+        }
+        correlation_info
+    }
+}
+
+impl Quantifier {
+    fn applied_to(
+        &self,
+        model: &Model,
+        id_gen: &mut expr::IdGen,
+        get_outer: expr::MirRelationExpr,
+        outer_projection: &Vec<ColumnReference>,
+    ) -> (expr::MirRelationExpr, usize) {
+        assert!(matches!(self.quantifier_type, QuantifierType::Foreach));
+        let input_box = model.get_box(self.input_box).borrow();
+        (
+            input_box.applied_to(model, id_gen, get_outer, outer_projection),
+            input_box.columns.len(),
+        )
+    }
+}
+
+impl Expr {
+    fn lower(&self, col_map: &Vec<ColumnReference>) -> expr::MirScalarExpr {
+        match self {
+            Expr::ColumnReference(c) => {
+                if let Some(i) =
+                    col_map
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, col)| if c == col { Some(i) } else { None })
+                {
+                    expr::MirScalarExpr::column(i)
+                } else {
+                    panic!();
+                }
+            }
+            _ => panic!(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use expr::explain::ViewExplanation;
+    use expr::DummyHumanizer;
     use sql_parser::ast::*;
     use sql_parser::parser::parse_statements;
 
@@ -1799,6 +1968,30 @@ mod tests {
                 if let Statement::Select(select) = &stmt {
                     let generator = ModelGenerator::new();
                     let _ = generator.generate(select).expect_err("expected error");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lowering_test() {
+        let test_cases = vec![
+            "select * from a",
+            "select * from a, b, c",
+            "select * from a, (b cross join c)",
+            "select a.* from a, (b cross join c)",
+        ];
+        for test_case in test_cases {
+            let parsed = parse_statements(test_case).unwrap();
+            for stmt in parsed {
+                if let Statement::Select(select) = &stmt {
+                    let generator = ModelGenerator::new();
+                    let model = generator.generate(select).expect(test_case);
+
+                    let relation = model.lower();
+                    let explanation = ViewExplanation::new(&relation, &DummyHumanizer);
+                    println!("plan for {}:", test_case);
+                    println!("{}", explanation.to_string());
                 }
             }
         }

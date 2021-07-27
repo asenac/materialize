@@ -1747,9 +1747,14 @@ impl Model {
             &mut id_gen,
             |id_gen, get_outer| {
                 let empty = Vec::new();
-                self.get_box(self.top_box)
-                    .borrow()
-                    .applied_to(self, id_gen, get_outer, &empty)
+                let mut lowered_boxes = HashMap::new();
+                self.get_box(self.top_box).borrow().applied_to(
+                    self,
+                    id_gen,
+                    &mut lowered_boxes,
+                    get_outer,
+                    &empty,
+                )
             },
         )
     }
@@ -1760,6 +1765,7 @@ impl QueryBox {
         &self,
         model: &Model,
         id_gen: &mut expr::IdGen,
+        lowered_boxes: &mut HashMap<BoxId, expr::LocalId>,
         get_outer: expr::MirRelationExpr,
         outer_projection: &Vec<ColumnReference>,
     ) -> expr::MirRelationExpr {
@@ -1785,10 +1791,14 @@ impl QueryBox {
                 let mut join_col_map = outer_projection.clone();
                 let mut join_projection = (0..oa).collect::<Vec<_>>();
                 for (i, (q_id, _)) in uncorrelated.iter().enumerate() {
-                    let (join_operand, input_arity) = model
-                        .get_quantifier(**q_id)
-                        .borrow()
-                        .applied_to(model, id_gen, get_outer.clone(), outer_projection);
+                    let (join_operand, input_arity) =
+                        model.get_quantifier(**q_id).borrow().applied_to(
+                            model,
+                            id_gen,
+                            lowered_boxes,
+                            get_outer.clone(),
+                            outer_projection,
+                        );
                     join_operands.push(join_operand);
                     join_projection.extend((0..input_arity).map(|c| oa * (i + 1) + c));
                     join_col_map.extend((0..input_arity).map(|position| ColumnReference {
@@ -1797,21 +1807,28 @@ impl QueryBox {
                     }));
                 }
 
-                let mut product = SR::join(
-                    join_operands,
-                    (0..oa)
-                        .map(|i| (0..uncorrelated.len()).map(|o| (o, i)).collect())
-                        .collect(),
-                )
-                .project(join_projection)
-                .filter(select.predicates.iter().map(|p| p.lower(&join_col_map)))
-                .map(
-                    self.columns
-                        .iter()
-                        .map(|c| c.expr.lower(&join_col_map))
-                        .collect(),
-                )
-                .project((join_col_map.len()..join_col_map.len() + self.columns.len()).collect());
+                let mut product = if join_operands.len() == 1 {
+                    join_operands[0].clone()
+                } else {
+                    SR::join(
+                        join_operands,
+                        (0..oa)
+                            .map(|i| (0..uncorrelated.len()).map(|o| (o, i)).collect())
+                            .collect(),
+                    )
+                };
+                product = product
+                    .project(join_projection)
+                    .filter(select.predicates.iter().map(|p| p.lower(&join_col_map)))
+                    .map(
+                        self.columns
+                            .iter()
+                            .map(|c| c.expr.lower(&join_col_map))
+                            .collect(),
+                    )
+                    .project(
+                        (join_col_map.len()..join_col_map.len() + self.columns.len()).collect(),
+                    );
 
                 // @todo correlated operands
                 // @todo order by and limit
@@ -1869,15 +1886,35 @@ impl Quantifier {
         &self,
         model: &Model,
         id_gen: &mut expr::IdGen,
+        lowered_boxes: &mut HashMap<BoxId, expr::LocalId>,
         get_outer: expr::MirRelationExpr,
         outer_projection: &Vec<ColumnReference>,
     ) -> (expr::MirRelationExpr, usize) {
         assert!(matches!(self.quantifier_type, QuantifierType::Foreach));
         let input_box = model.get_box(self.input_box).borrow();
-        (
-            input_box.applied_to(model, id_gen, get_outer, outer_projection),
-            input_box.columns.len(),
-        )
+        let lowered_relation = if let Some(id) = lowered_boxes.get(&input_box.id) {
+            expr::MirRelationExpr::Get {
+                id: expr::Id::Local(id.clone()),
+                typ: input_box.typ(model),
+            }
+        } else {
+            let mut relation =
+                input_box.applied_to(model, id_gen, lowered_boxes, get_outer, outer_projection);
+            if input_box.ranging_quantifiers.len() > 1 {
+                relation = relation.let_in(id_gen, |id_gen, body| {
+                    if let expr::MirRelationExpr::Get {
+                        id: expr::Id::Local(local_id),
+                        ..
+                    } = &body
+                    {
+                        lowered_boxes.insert(input_box.id, local_id.clone());
+                    }
+                    body
+                });
+            }
+            relation
+        };
+        (lowered_relation, input_box.columns.len())
     }
 }
 
@@ -1980,6 +2017,7 @@ mod tests {
             "select * from a, b, c",
             "select * from a, (b cross join c)",
             "select a.* from a, (b cross join c)",
+            "with a(a) as (select column1 from b) select b.* from a b, a c",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

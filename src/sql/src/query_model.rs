@@ -936,15 +936,12 @@ impl<'a> ModelGeneratorImpl<'a> {
                 // For lateral join operands, the current context is put in
                 // lateral mode and passed as the parent context of the
                 // derived relation.
-                let prev_lateral_flag = context.is_lateral;
-                context.is_lateral = *lateral;
-                let parent_context = if *lateral {
-                    Some(&*context)
+                let box_id = if *lateral {
+                    let lateral_context = context.enable_lateral();
+                    self.process_query(&subquery, Some(&lateral_context))?
                 } else {
-                    context.parent_context.clone()
+                    self.process_query(&subquery, context.parent_context.clone())?
                 };
-                let box_id = self.process_query(&subquery, parent_context)?;
-                context.is_lateral = prev_lateral_flag;
 
                 (box_id, true, alias.clone())
             }
@@ -1184,6 +1181,13 @@ impl<'a> NameResolutionContext<'a> {
             is_lateral: false,
             use_box_projection: false,
         }
+    }
+
+    /// Clones the current context, with lateral name resolution enabled
+    fn enable_lateral(&self) -> Self {
+        let mut clone = self.clone();
+        clone.is_lateral = true;
+        clone
     }
 
     /// Makes the projection of the box visible for name resolution.

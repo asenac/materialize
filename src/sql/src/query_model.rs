@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// A Query Graph Model instance represents a SQL query.
+#[derive(Debug)]
 struct Model {
     /// The ID of the box representing the entry-point of the query.
     top_box: BoxId,
@@ -136,6 +137,7 @@ type BoxId = usize;
 type QuantifierSet = BTreeSet<QuantifierId>;
 
 /// A semantic operator within a Query Graph.
+#[derive(Debug)]
 struct QueryBox {
     /// uniquely identifies the box within the model
     id: BoxId,
@@ -214,6 +216,7 @@ impl QueryBox {
     }
 }
 
+#[derive(Debug)]
 enum BoxType {
     BaseTable(BaseTable),
     Except,
@@ -251,6 +254,7 @@ enum DistinctOperation {
 
 // pub use sql_parser::ast::Ident;
 
+#[derive(Debug)]
 struct Quantifier {
     /// uniquely identifiers the quantifier within the model
     id: QuantifierId,
@@ -299,6 +303,7 @@ impl fmt::Display for QuantifierType {
     }
 }
 
+#[derive(Debug)]
 struct BaseTable {/* @todo table metadata from the catalog */}
 
 impl BaseTable {
@@ -307,10 +312,12 @@ impl BaseTable {
     }
 }
 
+#[derive(Debug)]
 struct Grouping {
     key: Vec<Box<Expr>>,
 }
 
+#[derive(Debug)]
 struct OuterJoin {
     predicates: Vec<Box<Expr>>,
 }
@@ -323,6 +330,7 @@ impl OuterJoin {
     }
 }
 
+#[derive(Debug)]
 struct Select {
     predicates: Vec<Box<Expr>>,
     order_key: Option<Vec<Box<Expr>>>,
@@ -341,15 +349,18 @@ impl Select {
     }
 }
 
+#[derive(Debug)]
 struct TableFunction {
     parameters: Vec<Box<Expr>>,
     // @todo function metadata from the catalog
 }
 
+#[derive(Debug)]
 struct Values {
     rows: Vec<Vec<Box<Expr>>>,
 }
 
+#[derive(Debug)]
 struct Column {
     expr: Expr,
     alias: Option<Ident>,
@@ -1599,6 +1610,25 @@ mod tests {
 
                     let dot_generator = DotGenerator::new();
                     println!("{}", dot_generator.generate(&model, test_case).unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn simple_error_test() {
+        let test_cases = vec![
+            // non-lateral derived tables must not see the sibling context
+            "select b from a as a(a,b), (select * from (values(a.a)))",
+            // this must fail with ambiguous column name error
+            // "select b as a, a from a as a(a, b) order by a",
+        ];
+        for test_case in test_cases {
+            let parsed = parse_statements(test_case).unwrap();
+            for stmt in parsed {
+                if let Statement::Select(select) = &stmt {
+                    let generator = ModelGenerator::new();
+                    let _ = generator.generate(select).expect_err("expected error");
                 }
             }
         }

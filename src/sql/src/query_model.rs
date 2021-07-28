@@ -1843,7 +1843,9 @@ impl QueryBox {
                 };
                 product = product
                     .project(join_projection)
+                    // @todo do not produce empty filters
                     .filter(select.predicates.iter().map(|p| p.lower(&join_col_map)))
+                    // @todo do not map column references
                     .map(
                         self.columns
                             .iter()

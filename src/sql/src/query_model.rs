@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_variables)]
 
+use expr::VariadicFunc;
 use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, HashSet};
@@ -430,6 +431,10 @@ struct Column {
 enum Expr {
     ColumnReference(ColumnReference),
     BaseColumn(BaseColumn),
+    CallVariadic {
+        func: VariadicFunc,
+        exprs: Vec<Expr>,
+    },
 }
 
 impl fmt::Display for Expr {
@@ -440,6 +445,9 @@ impl fmt::Display for Expr {
             }
             Expr::BaseColumn(c) => {
                 write!(f, "C{}", c.position)
+            }
+            Expr::CallVariadic { func, exprs } => {
+                write!(f, "{}({})", func, ore::str::separated(", ", exprs.clone()))
             }
         }
     }
@@ -458,6 +466,11 @@ impl Expr {
                 }
             }
             Expr::BaseColumn(_) => {}
+            Expr::CallVariadic { func: _, exprs } => {
+                for e in exprs.iter() {
+                    e.collect_column_references_from_context(context, column_refs);
+                }
+            }
         }
     }
 }
@@ -1120,7 +1133,7 @@ impl<'a> ModelGeneratorImpl<'a> {
     ) -> Result<Expr, String> {
         use sql_parser::ast;
         match expr {
-            ast::Expr::Identifier(id) => Ok(context.resolve_column(&self.model, id)?),
+            ast::Expr::Identifier(id) => self.process_identifier(id, context),
             ast::Expr::Subquery(query) => {
                 let quantifier_id =
                     self.process_subquery(query, context, &join_id, QuantifierType::Scalar)?;
@@ -1132,6 +1145,14 @@ impl<'a> ModelGeneratorImpl<'a> {
             }
             _ => Err(format!("unsupported stuff")),
         }
+    }
+
+    fn process_identifier(
+        &mut self,
+        id: &Vec<Ident>,
+        context: &NameResolutionContext,
+    ) -> Result<Expr, String> {
+        context.resolve_column(&self.model, id)
     }
 
     /// Add a subquery quantifier of the given type to the given join box ranging over

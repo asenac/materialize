@@ -223,6 +223,7 @@ impl QueryBox {
         }
     }
 
+    /// Visit all the expressions in this query box.
     fn visit_expressions<F, E>(&self, f: &mut F) -> Result<(), E>
     where
         F: FnMut(&Expr) -> Result<(), E>,
@@ -1133,6 +1134,10 @@ impl<'a> ModelGeneratorImpl<'a> {
         }
     }
 
+    /// Add a subquery quantifier of the given type to the given join box ranging over
+    /// the box resulting of processing the given query tree.
+    ///
+    /// Return the resulting quantifier.
     fn process_subquery(
         &mut self,
         query: &sql_parser::ast::Query<Raw>,
@@ -1192,7 +1197,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         }
     }
 
-    /// return the column alias/name of the column projected in the given position
+    /// Return the column alias/name of the column projected in the given position
     /// by the input box of the given quantifier
     fn get_column_alias(&self, quantifier_id: QuantifierId, position: usize) -> Option<Ident> {
         let q = self.model.get_quantifier(quantifier_id).borrow();

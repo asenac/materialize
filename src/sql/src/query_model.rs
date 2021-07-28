@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_variables)]
 
+use anyhow::bail;
 use expr::VariadicFunc;
 use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -527,7 +528,7 @@ impl ModelGenerator {
         Self {}
     }
 
-    fn generate(self, statement: &SelectStatement<Raw>) -> Result<Model, String> {
+    fn generate(self, statement: &SelectStatement<Raw>) -> Result<Model, anyhow::Error> {
         let mut model = Model::new();
         {
             let generator = ModelGeneratorImpl::new(&mut model);
@@ -546,7 +547,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         Self { model }
     }
 
-    fn process_top_level_query(mut self, query: &Query<Raw>) -> Result<(), String> {
+    fn process_top_level_query(mut self, query: &Query<Raw>) -> Result<(), anyhow::Error> {
         let top_box = self.process_query(query, None)?;
         self.model.top_box = top_box;
         Ok(())
@@ -556,7 +557,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         &mut self,
         query: &Query<Raw>,
         parent_context: Option<&NameResolutionContext>,
-    ) -> Result<BoxId, String> {
+    ) -> Result<BoxId, anyhow::Error> {
         let box_id = self.model.make_select_box();
         let mut current_context = NameResolutionContext::new(box_id, parent_context);
         self.add_ctes_to_context(&query.ctes, &mut current_context)?;
@@ -588,7 +589,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         &mut self,
         ctes: &Vec<Cte<Raw>>,
         context: &mut NameResolutionContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), anyhow::Error> {
         // @todo CTEs can see previous CTEs within the same list
         for cte in ctes.iter() {
             let mut cte_id = self.process_query(&cte.query, context.parent_context.clone())?;
@@ -604,7 +605,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         body: &SetExpr<Raw>,
         query_box: BoxId,
         context: &mut NameResolutionContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), anyhow::Error> {
         match body {
             SetExpr::Select(select) => self.process_select(&*select, query_box, context),
             SetExpr::Values(values) => self.process_values(&*values, query_box, context),
@@ -688,7 +689,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         select: &sql_parser::ast::Select<Raw>,
         query_box: BoxId,
         context: &mut NameResolutionContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), anyhow::Error> {
         // @todo collect aggregates
         let is_grouping = !select.group_by.is_empty() || select.having.is_some();
 
@@ -786,7 +787,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                     self.model.get_box(query_box).borrow_mut().distinct =
                         DistinctOperation::Enforce;
                 }
-                _ => return Err(format!("@todo unsupported stuff")),
+                _ => bail!("@todo unsupported stuff"),
             }
         }
         Ok(())
@@ -797,7 +798,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         projection: &Vec<sql_parser::ast::SelectItem<Raw>>,
         query_box: BoxId,
         context: &mut NameResolutionContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), anyhow::Error> {
         use sql_parser::ast;
         for si in projection {
             match si {
@@ -834,7 +835,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                                 });
                         }
                     } else {
-                        return Err(format!("unknown table {:?}", table_name));
+                        bail!("unknown table {:?}", table_name);
                     }
                 }
                 ast::SelectItem::Expr { expr, alias } => {
@@ -864,7 +865,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         from: &Vec<TableWithJoins<Raw>>,
         query_box: BoxId,
         context: &mut NameResolutionContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), anyhow::Error> {
         if from.is_empty() {
             let values_id = self
                 .model
@@ -886,7 +887,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         &mut self,
         twj: &TableWithJoins<Raw>,
         context: &mut NameResolutionContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), anyhow::Error> {
         // all comma-join operands are foreach quantifier
         let _ =
             self.process_join_tree(&twj.relation, &twj.joins, QuantifierType::Foreach, context)?;
@@ -899,7 +900,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         joins: &[sql_parser::ast::Join<Raw>],
         quantifier_type: QuantifierType,
         context: &mut NameResolutionContext,
-    ) -> Result<QuantifierId, String> {
+    ) -> Result<QuantifierId, anyhow::Error> {
         if let Some(join) = joins.last() {
             let (box_type, left_q_type, right_q_type) = match &join.join_operator {
                 sql_parser::ast::JoinOperator::CrossJoin
@@ -970,7 +971,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         table_factor: &TableFactor<Raw>,
         quantifier_type: QuantifierType,
         context: &mut NameResolutionContext,
-    ) -> Result<QuantifierId, String> {
+    ) -> Result<QuantifierId, anyhow::Error> {
         let (mut box_id, is_scope, alias) = match table_factor {
             TableFactor::Table { name, alias } => {
                 let alias = if let Some(_) = alias {
@@ -1036,14 +1037,14 @@ impl<'a> ModelGeneratorImpl<'a> {
 
                 (box_id, true, alias.clone())
             }
-            _ => return Err(format!("unsupported stuff")),
+            _ => bail!("unsupported stuff"),
         };
 
         if let Some(alias) = &alias {
             if alias.strict
                 && alias.columns.len() != self.model.get_box(box_id).borrow().columns.len()
             {
-                return Err(format!("column number mismatch"));
+                bail!("column number mismatch");
             }
             // add intermediate select box with the column aliases
             box_id = self.add_column_aliases(box_id, &alias.columns);
@@ -1072,7 +1073,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         constraint: &JoinConstraint<Raw>,
         join_id: BoxId,
         context: &mut NameResolutionContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), anyhow::Error> {
         match constraint {
             JoinConstraint::On(expr) => {
                 let expr = self.process_expr(expr, context, Some(join_id))?;
@@ -1081,7 +1082,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                 mut_join.add_predicate(Box::new(expr));
                 mut_join.add_all_input_columns(self.model);
             }
-            _ => return Err(format!("unsupported stuff")),
+            _ => bail!("unsupported stuff"),
         }
         Ok(())
     }
@@ -1091,7 +1092,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         values: &sql_parser::ast::Values<Raw>,
         query_box: BoxId,
         context: &mut NameResolutionContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), anyhow::Error> {
         let mut rows = Vec::with_capacity(values.0.len());
         for values in values.0.iter() {
             let mut row = Vec::with_capacity(values.len());
@@ -1130,7 +1131,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         expr: &sql_parser::ast::Expr<Raw>,
         context: &NameResolutionContext,
         join_id: Option<BoxId>,
-    ) -> Result<Expr, String> {
+    ) -> Result<Expr, anyhow::Error> {
         use sql_parser::ast;
         match expr {
             ast::Expr::Identifier(id) => self.process_identifier(id, context),
@@ -1143,7 +1144,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                     position: 0,
                 }))
             }
-            _ => Err(format!("unsupported stuff")),
+            _ => bail!("unsupported stuff"),
         }
     }
 
@@ -1151,7 +1152,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         &mut self,
         id: &Vec<Ident>,
         context: &NameResolutionContext,
-    ) -> Result<Expr, String> {
+    ) -> Result<Expr, anyhow::Error> {
         context.resolve_column(&self.model, id)
     }
 
@@ -1165,7 +1166,7 @@ impl<'a> ModelGeneratorImpl<'a> {
         context: &NameResolutionContext,
         join_id: &Option<BoxId>,
         quantifier_type: QuantifierType,
-    ) -> Result<QuantifierId, String> {
+    ) -> Result<QuantifierId, anyhow::Error> {
         if let Some(join_id) = join_id {
             let subquery_box = self.process_query(query, Some(context))?;
             Ok(self
@@ -1173,7 +1174,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                 .make_quantifier(quantifier_type, subquery_box, *join_id))
         } else {
             // @todo what context?
-            Err(format!("subqueries are not supported within this context"))
+            bail!("subqueries are not supported within this context")
         }
     }
 
@@ -1202,10 +1203,10 @@ impl<'a> ModelGeneratorImpl<'a> {
     }
 
     /// @todo support for RawName::Id
-    fn extract_name(&self, name: &sql_parser::ast::RawName) -> Result<Ident, String> {
+    fn extract_name(&self, name: &sql_parser::ast::RawName) -> Result<Ident, anyhow::Error> {
         let name = match name {
             sql_parser::ast::RawName::Name(c) => c.0.last().cloned().unwrap(),
-            _ => return Err(format!("unsupported")),
+            _ => bail!("unsupported"),
         };
         Ok(name)
     }
@@ -1315,7 +1316,7 @@ impl<'a> NameResolutionContext<'a> {
         None
     }
 
-    fn resolve_column(&self, model: &Model, name: &Vec<Ident>) -> Result<Expr, String> {
+    fn resolve_column(&self, model: &Model, name: &Vec<Ident>) -> Result<Expr, anyhow::Error> {
         let mut current_ctx = Some(self);
 
         while let Some(current) = current_ctx {
@@ -1337,7 +1338,7 @@ impl<'a> NameResolutionContext<'a> {
             current_ctx = current.parent_context.clone();
         }
 
-        Err(format!("column {:?} could not be resolved", name))
+        bail!("column {:?} could not be resolved", name)
     }
 
     /// Resolve the column identified by name against the quantifiers in this context.
@@ -1347,7 +1348,7 @@ impl<'a> NameResolutionContext<'a> {
         &self,
         model: &Model,
         name: &Vec<Ident>,
-    ) -> Result<Option<Expr>, String> {
+    ) -> Result<Option<Expr>, anyhow::Error> {
         let expr = match name.len() {
             1 => {
                 let mut found = None;
@@ -1356,7 +1357,7 @@ impl<'a> NameResolutionContext<'a> {
                         self.resolve_column_in_quantifier(model, *quantifier_id, &name[0])?
                     {
                         if found.is_some() {
-                            return Err(format!("ambiguous column name {:?}", name));
+                            bail!("ambiguous column name {:?}", name);
                         }
                         found = Some(expr);
                     }
@@ -1369,7 +1370,7 @@ impl<'a> NameResolutionContext<'a> {
                             if *alias == name[0] {
                                 if let Some(found) = &found {
                                     if *found != c.expr {
-                                        return Err(format!("ambiguous column name {:?}", name));
+                                        bail!("ambiguous column name {:?}", name);
                                     }
                                 } else {
                                     found = Some(c.expr.clone());
@@ -1388,7 +1389,7 @@ impl<'a> NameResolutionContext<'a> {
                     None
                 }
             }
-            _ => return Err(format!("unsupported stuff")),
+            _ => bail!("unsupported stuff"),
         };
 
         Ok(expr)
@@ -1401,7 +1402,7 @@ impl<'a> NameResolutionContext<'a> {
         model: &Model,
         quantifier_id: QuantifierId,
         name: &Ident,
-    ) -> Result<Option<Expr>, String> {
+    ) -> Result<Option<Expr>, anyhow::Error> {
         let q = model.get_quantifier(quantifier_id).borrow();
         let input_box = model.get_box(q.input_box).borrow();
         let mut found = None;
@@ -1409,7 +1410,7 @@ impl<'a> NameResolutionContext<'a> {
             if let Some(alias) = &c.alias {
                 if alias == name {
                     if found.is_some() {
-                        return Err(format!("ambiguous column name {}", name));
+                        bail!("ambiguous column name {}", name);
                     }
 
                     found = Some(position);
@@ -1476,7 +1477,7 @@ impl<'a> NameResolutionContext<'a> {
     /// expression that points to one of the quantifiers in the owner box of
     /// this context. Adds the given column to the projection of all the
     /// intermediate boxes.
-    fn pullup_column_reference(&self, model: &Model, expr: Expr) -> Result<Expr, String> {
+    fn pullup_column_reference(&self, model: &Model, expr: Expr) -> Result<Expr, anyhow::Error> {
         match expr {
             Expr::ColumnReference(mut c) => {
                 loop {
@@ -1506,10 +1507,7 @@ impl<'a> NameResolutionContext<'a> {
                                 if let Some(position) = parent_box.find_column(&expr) {
                                     position
                                 } else {
-                                    return Err(format!(
-                                        "{} doesn't appear in the GROUP BY clause",
-                                        expr
-                                    ));
+                                    bail!("{} doesn't appear in the GROUP BY clause", expr);
                                 }
                             }
                             _ => panic!("unexpected box type"),
@@ -1541,7 +1539,7 @@ impl DotGenerator {
         }
     }
 
-    fn generate(mut self, model: &Model, label: &str) -> Result<String, String> {
+    fn generate(mut self, model: &Model, label: &str) -> Result<String, anyhow::Error> {
         self.new_line("digraph G {");
         self.inc();
         self.new_line("compound = true");

@@ -482,6 +482,10 @@ mod tests {
             "select a.b from a as a(a,b) full join b as b(b, c) on (select a.a from c as c(c, d))",
             "select a.* from (values((select column1 from b), (select column2 from c))) as a(a, b)",
             "select a.* from a as a(a, b) group by a, b",
+            "select b from a as a(a, b) inner join b as b(c, a) using (a)",
+            // TODO these queries should not project a twice
+            "select * from a as a(a, b) inner join b as b(c, a) using (a)",
+            "select * from a as a(a, b) inner join b as b(a, c) using (a)",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

@@ -11,12 +11,12 @@ use crate::query_model::{
     BaseColumn, BaseTable, BoxId, BoxType, Column, ColumnReference, DistinctOperation, Expr,
     Grouping, Model, OuterJoin, QuantifierId, QuantifierType, Select, Values,
 };
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use sql_parser::ast::{
     Cte, Ident, Query, Raw, SelectStatement, SetExpr, TableFactor, TableWithJoins,
 };
 use sql_parser::ast::{JoinConstraint, TableAlias};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) struct ModelGenerator {}
 
@@ -432,7 +432,13 @@ impl<'a> ModelGeneratorImpl<'a> {
                 | sql_parser::ast::JoinOperator::FullOuter(constraint)
                 | sql_parser::ast::JoinOperator::LeftOuter(constraint)
                 | sql_parser::ast::JoinOperator::RightOuter(constraint) => {
-                    self.process_join_constraint(constraint, join_id, &mut join_context)?;
+                    self.process_join_constraint(
+                        constraint,
+                        join_id,
+                        &mut join_context,
+                        left_q,
+                        right_q,
+                    )?;
                 }
             }
 
@@ -559,6 +565,8 @@ impl<'a> ModelGeneratorImpl<'a> {
         constraint: &JoinConstraint<Raw>,
         join_id: BoxId,
         context: &mut NameResolutionContext,
+        left_q: QuantifierId,
+        right_q: QuantifierId,
     ) -> Result<(), anyhow::Error> {
         match constraint {
             JoinConstraint::On(expr) => {
@@ -567,6 +575,87 @@ impl<'a> ModelGeneratorImpl<'a> {
                 let mut mut_join = join.borrow_mut();
                 mut_join.add_predicate(Box::new(expr));
                 mut_join.add_all_input_columns(self.model);
+            }
+            JoinConstraint::Using(names) => {
+                let mut left_cols = Vec::new();
+                let mut right_cols = Vec::new();
+                for name in names.iter() {
+                    left_cols.push(
+                        context
+                            .resolve_column_in_quantifier(self.model, left_q, name)?
+                            .ok_or_else(|| anyhow!("column {} not found", name))?,
+                    );
+                    right_cols.push(
+                        context
+                            .resolve_column_in_quantifier(self.model, right_q, name)?
+                            .ok_or_else(|| anyhow!("column {} not found", name))?,
+                    );
+                }
+
+                // @todo build equality predicates
+
+                // build projection
+                let left_col_pos = left_cols
+                    .iter()
+                    .filter_map(|e| {
+                        if let Expr::ColumnReference(c) = e {
+                            Some(c.position)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<HashSet<_>>();
+                let right_col_pos = right_cols
+                    .iter()
+                    .filter_map(|e| {
+                        if let Expr::ColumnReference(c) = e {
+                            Some(c.position)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<HashSet<_>>();
+
+                // @todo right outer join, full outer join
+                let mut mut_join = self.model.get_box(join_id).borrow_mut();
+                for (name, expr) in names.iter().zip(left_cols.iter()) {
+                    mut_join.columns.push(Column {
+                        expr: expr.clone(),
+                        alias: Some(name.clone()),
+                    });
+                }
+                // remaining columns from the left
+                {
+                    let left_q = self.model.get_quantifier(left_q).borrow();
+                    let left_box = self.model.get_box(left_q.input_box).borrow();
+                    for (position, c) in left_box.columns.iter().enumerate() {
+                        if !left_col_pos.contains(&position) {
+                            mut_join.columns.push(Column {
+                                expr: Expr::ColumnReference(ColumnReference {
+                                    quantifier_id: left_q.id,
+                                    position,
+                                }),
+                                alias: c.alias.clone(),
+                            });
+                        }
+                    }
+                }
+                // remaining columns from the right
+                {
+                    let right_q = self.model.get_quantifier(right_q).borrow();
+                    let right_box = self.model.get_box(right_q.input_box).borrow();
+                    for (position, c) in right_box.columns.iter().enumerate() {
+                        if !right_col_pos.contains(&position) {
+                            mut_join.columns.push(Column {
+                                expr: Expr::ColumnReference(ColumnReference {
+                                    quantifier_id: right_q.id,
+                                    position,
+                                }),
+                                alias: c.alias.clone(),
+                            });
+                        }
+                    }
+                }
             }
             _ => bail!("unsupported stuff"),
         }

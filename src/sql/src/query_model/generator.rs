@@ -301,13 +301,38 @@ impl<'a> ModelGeneratorImpl<'a> {
         context: &mut NameResolutionContext,
     ) -> Result<(), anyhow::Error> {
         use sql_parser::ast;
+
+        // Add all columns projected by the given quantifier to the projection
+        // of the current box. Returns an error in any column is not liftable
+        // all the way up to the owner box of the context of the quantifier.
+        let add_all_columns_to_projection = |model: &Model,
+                                             quantifier_context: &NameResolutionContext,
+                                             quantifier_id: QuantifierId|
+         -> Result<(), anyhow::Error> {
+            let q = model.get_quantifier(quantifier_id);
+            let bq = q.borrow();
+            let input_box = model.get_box(bq.input_box).borrow();
+            for (position, c) in input_box.columns.iter().enumerate() {
+                let expr = Expr::ColumnReference(ColumnReference {
+                    quantifier_id,
+                    position,
+                });
+                let expr = quantifier_context.pullup_column_reference(model, expr)?;
+                let expr = quantifier_context.pullup_expression_through_group_by(model, expr)?;
+                model.get_box(query_box).borrow_mut().columns.push(Column {
+                    expr,
+                    alias: c.alias.clone(),
+                });
+            }
+            Ok(())
+        };
+
         for si in projection {
             match si {
                 ast::SelectItem::Wildcard => {
-                    self.model
-                        .get_box(query_box)
-                        .borrow_mut()
-                        .add_all_input_columns(self.model);
+                    for quantifier_id in context.quantifiers.iter() {
+                        add_all_columns_to_projection(self.model, context, *quantifier_id)?;
+                    }
                 }
                 ast::SelectItem::Expr {
                     expr: ast::Expr::QualifiedWildcard(table_name),
@@ -317,26 +342,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                     if let Some((context, quantifier_id)) =
                         context.resolve_quantifier(self.model, table_name.last().unwrap())
                     {
-                        let input_box_id =
-                            self.model.get_quantifier(quantifier_id).borrow().input_box;
-                        let input_box = self.model.get_box(input_box_id).borrow();
-                        for (position, c) in input_box.columns.iter().enumerate() {
-                            let expr = Expr::ColumnReference(ColumnReference {
-                                quantifier_id,
-                                position,
-                            });
-                            let expr = context.pullup_column_reference(self.model, expr)?;
-                            let expr =
-                                context.pullup_expression_through_group_by(self.model, expr)?;
-                            self.model
-                                .get_box(query_box)
-                                .borrow_mut()
-                                .columns
-                                .push(Column {
-                                    expr,
-                                    alias: c.alias.clone(),
-                                });
-                        }
+                        add_all_columns_to_projection(self.model, context, quantifier_id)?;
                     } else {
                         bail!("unknown table {:?}", table_name);
                     }

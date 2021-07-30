@@ -508,15 +508,16 @@ mod tests {
             "select b as a, a from a as a(a, b) order by a",
             // a.b is not liftable through the grouping box
             "select a.* from a as a(a, b) group by a",
-            // @todo fix default projections
-            // "select * from a as a(a, b) group by a",
+            "select * from a as a(a, b) group by a",
+            "select a.a from a as a(a, b) group by a having (select a.b from z)",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();
             for stmt in parsed {
                 if let Statement::Select(select) = &stmt {
                     let generator = ModelGenerator::new();
-                    let _ = generator.generate(select).expect_err("expected error");
+                    let error = generator.generate(select).expect_err("expected error");
+                    println!("error for {}:", error);
                 }
             }
         }

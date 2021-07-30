@@ -818,7 +818,20 @@ impl<'a> ModelGeneratorImpl<'a> {
         let q = self.model.get_quantifier(quantifier_id);
         let bq = q.borrow();
         let input_box = self.model.get_box(bq.input_box).borrow();
+        let default_projection_size = quantifier_context.default_projections.get(&bq.input_box);
         for (position, c) in input_box.columns.iter().enumerate() {
+            if let Some(size) = default_projection_size {
+                // Extra columns may have been lifted since the default projection
+                // of the box was computed. Example:
+                //
+                // select * from a as a(a, b) left join b as b(a, c) using (a) where b.a is null
+                //
+                // b.a doesn't belong to the default projection of the join box, but it
+                // was lifted while processing the WHERE clause.
+                if position >= *size {
+                    break;
+                }
+            }
             let expr = Expr::ColumnReference(ColumnReference {
                 quantifier_id,
                 position,

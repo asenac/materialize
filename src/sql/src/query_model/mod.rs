@@ -481,6 +481,7 @@ mod tests {
             "select a.b from a as a(a,b) full join b as b(b, c) on a.a",
             "select a.b from a as a(a,b) full join b as b(b, c) on (select a.a from c as c(c, d))",
             "select a.* from (values((select column1 from b), (select column2 from c))) as a(a, b)",
+            "select a.* from a as a(a, b) group by a, b",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();
@@ -505,6 +506,10 @@ mod tests {
             "select b from a as a(a,b), (select * from (values(a.a)))",
             // this must fail with ambiguous column name error
             "select b as a, a from a as a(a, b) order by a",
+            // a.b is not liftable through the grouping box
+            "select a.* from a as a(a, b) group by a",
+            // @todo fix default projections
+            // "select * from a as a(a, b) group by a",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

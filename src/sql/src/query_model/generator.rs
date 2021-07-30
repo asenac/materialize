@@ -257,6 +257,10 @@ impl<'a> ModelGeneratorImpl<'a> {
                 // @todo add all the columns from the join_box that functionally depend on
                 // the columns in the grouping key to the projection of the grouping_box
                 grouping_box.box_type = BoxType::Grouping(Grouping { key: grouping_key });
+
+                // any expression on top of a grouping box must be liftable through
+                // its projection
+                context.grouping_box = Some(grouping_box.id);
             }
 
             // make the grouping box the input of the parent select box
@@ -322,6 +326,8 @@ impl<'a> ModelGeneratorImpl<'a> {
                                 position,
                             });
                             let expr = context.pullup_column_reference(self.model, expr)?;
+                            let expr =
+                                context.pullup_expression_through_group_by(self.model, expr)?;
                             self.model
                                 .get_box(query_box)
                                 .borrow_mut()
@@ -629,20 +635,35 @@ impl<'a> ModelGeneratorImpl<'a> {
         context: &NameResolutionContext,
         join_id: Option<BoxId>,
     ) -> Result<Expr, anyhow::Error> {
+        let expr = self.process_expr_impl(expr, context, join_id)?;
+
+        // Try to lift the expression through the projection of the
+        // grouping box, if set.
+        context.pullup_expression_through_group_by(self.model, expr)
+    }
+
+    fn process_expr_impl(
+        &mut self,
+        expr: &sql_parser::ast::Expr<Raw>,
+        context: &NameResolutionContext,
+        join_id: Option<BoxId>,
+    ) -> Result<Expr, anyhow::Error> {
         use sql_parser::ast;
-        match expr {
-            ast::Expr::Identifier(id) => self.process_identifier(id, context),
+        let expr = match expr {
+            ast::Expr::Identifier(id) => self.process_identifier(id, context)?,
             ast::Expr::Subquery(query) => {
                 let quantifier_id =
                     self.process_subquery(query, context, &join_id, QuantifierType::Scalar)?;
                 // @todo multi-column scalar subqueries
-                Ok(Expr::ColumnReference(ColumnReference {
+                Expr::ColumnReference(ColumnReference {
                     quantifier_id,
                     position: 0,
-                }))
+                })
             }
             _ => bail!("unsupported stuff"),
-        }
+        };
+
+        Ok(expr)
     }
 
     fn process_identifier(
@@ -730,6 +751,7 @@ struct NameResolutionContext<'a> {
     owner_box: BoxId,
     /// leaf quantifiers for resolving column names
     quantifiers: Vec<QuantifierId>,
+    grouping_box: Option<BoxId>,
     /// CTEs visibile within this context
     ctes: HashMap<Ident, BoxId>,
     /// an optional parent context
@@ -763,6 +785,7 @@ impl<'a> NameResolutionContext<'a> {
         Self {
             owner_box,
             quantifiers: Vec::new(),
+            grouping_box: None,
             ctes: HashMap::new(),
             parent_context,
             sibling_context: None,
@@ -776,6 +799,7 @@ impl<'a> NameResolutionContext<'a> {
         Self {
             owner_box: join_box,
             quantifiers: Vec::new(),
+            grouping_box: None,
             ctes: HashMap::new(),
             parent_context: sibling_context.parent_context.clone(),
             sibling_context: Some(sibling_context),
@@ -972,49 +996,66 @@ impl<'a> NameResolutionContext<'a> {
 
     /// Given a column reference expression, returns another column reference
     /// expression that points to one of the quantifiers in the owner box of
-    /// this context. Adds the given column to the projection of all the
-    /// intermediate boxes.
+    /// this context or in the grouping box, if set.
+    /// Adds the given column to the projection of all the intermediate boxes.
     fn pullup_column_reference(&self, model: &Model, expr: Expr) -> Result<Expr, anyhow::Error> {
         match expr {
             Expr::ColumnReference(mut c) => {
                 loop {
                     let q = model.get_quantifier(c.quantifier_id).borrow();
-                    if q.parent_box == self.owner_box {
+                    if q.parent_box == self.owner_box
+                        || self
+                            .grouping_box
+                            .map_or(false, |grouping_box| q.parent_box == grouping_box)
+                    {
+                        // We have reached a quantifier within either the owner box
+                        // or the grouping box. Expressions are lifted through
+                        // the projection of the grouping box through
+                        // `pullup_expression_through_group_by`.
                         break;
                     }
-                    let parent_q_id = {
-                        let parent_box = model.get_box(q.parent_box).borrow();
-                        assert!(parent_box.ranging_quantifiers.len() == 1);
-                        *parent_box.ranging_quantifiers.iter().next().unwrap()
-                    };
-
                     let alias = {
                         let b = model.get_box(q.input_box).borrow();
                         b.columns[c.position].alias.clone()
                     };
-                    c.position = {
-                        let mut parent_box = model.get_box(q.parent_box).borrow_mut();
-                        let expr = Expr::ColumnReference(c.clone());
-                        match &parent_box.box_type {
-                            BoxType::Select(_) | BoxType::OuterJoin(_) => {
-                                parent_box.add_column_if_not_exists(expr, alias)
-                            }
-                            BoxType::Grouping(_) => {
-                                // @todo special case for grouping boxes.
-                                if let Some(position) = parent_box.find_column(&expr) {
-                                    position
-                                } else {
-                                    bail!("{} doesn't appear in the GROUP BY clause", expr);
-                                }
-                            }
-                            _ => panic!("unexpected box type"),
+                    let mut parent_box = model.get_box(q.parent_box).borrow_mut();
+                    assert!(parent_box.ranging_quantifiers.len() == 1);
+                    let parent_q_id = *parent_box.ranging_quantifiers.iter().next().unwrap();
+                    match &parent_box.box_type {
+                        BoxType::Select(_) | BoxType::OuterJoin(_) => {
+                            let expr = Expr::ColumnReference(c.clone());
+                            c.position = parent_box.add_column_if_not_exists(expr, alias)
                         }
-                    };
+                        _ => panic!("unexpected box type"),
+                    }
                     c.quantifier_id = parent_q_id;
                 }
                 Ok(Expr::ColumnReference(c.clone()))
             }
             _ => panic!("expected column reference"),
+        }
+    }
+
+    fn pullup_expression_through_group_by(
+        &self,
+        model: &Model,
+        expr: Expr,
+    ) -> Result<Expr, anyhow::Error> {
+        if let Some(grouping_box) = self.grouping_box {
+            let grouping_box = model.get_box(grouping_box).borrow();
+            // @todo try recursively
+            if let Some(position) = grouping_box.find_column(&expr) {
+                assert!(grouping_box.ranging_quantifiers.len() == 1);
+                let quantifier_id = *grouping_box.ranging_quantifiers.iter().next().unwrap();
+                Ok(Expr::ColumnReference(ColumnReference {
+                    quantifier_id,
+                    position,
+                }))
+            } else {
+                bail!("{} doesn't appear in the GROUP BY clause", expr);
+            }
+        } else {
+            Ok(expr)
         }
     }
 }

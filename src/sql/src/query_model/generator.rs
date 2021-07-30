@@ -463,6 +463,7 @@ impl<'a> ModelGeneratorImpl<'a> {
 
             let child_quantifiers = join_context.disown_quantifiers();
             context.merge_quantifiers(child_quantifiers);
+            context.remember_default_projection_size(self.model, join_id);
 
             // add the join as a quantifier in the parent join
             let quantifier_id =
@@ -519,6 +520,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                 if alias.is_none() {
                     let child_quantifiers = join_context.disown_quantifiers();
                     context.merge_quantifiers(child_quantifiers);
+                    context.remember_default_projection_size(self.model, join_id);
                 }
 
                 // project everything
@@ -838,6 +840,11 @@ impl<'a> NameResolutionContext<'a> {
     fn merge_quantifiers(&mut self, quantifiers: (Vec<QuantifierId>, HashMap<BoxId, usize>)) {
         self.quantifiers.extend(quantifiers.0);
         self.default_projections.extend(quantifiers.1);
+    }
+
+    fn remember_default_projection_size(&mut self, model: &Model, box_id: BoxId) {
+        self.default_projections
+            .insert(box_id, model.get_box(box_id).borrow().columns.len());
     }
 
     fn resolve_cte(&self, name: &Ident) -> Option<BoxId> {

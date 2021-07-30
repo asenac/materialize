@@ -606,7 +606,16 @@ impl<'a> ModelGeneratorImpl<'a> {
                     );
                 }
 
-                // @todo build equality predicates
+                // build equality predicates
+                let mut mut_join = self.model.get_box(join_id).borrow_mut();
+                for (left, right) in left_cols.iter().zip(right_cols.iter()) {
+                    // @todo type checking!
+                    mut_join.add_predicate(Box::new(Expr::CallBinary {
+                        func: expr::BinaryFunc::Eq,
+                        expr1: Box::new(left.clone()),
+                        expr2: Box::new(right.clone()),
+                    }));
+                }
 
                 // build projection
                 let left_col_pos = left_cols
@@ -631,7 +640,6 @@ impl<'a> ModelGeneratorImpl<'a> {
                     .collect::<HashSet<_>>();
 
                 // @todo right outer join, full outer join
-                let mut mut_join = self.model.get_box(join_id).borrow_mut();
                 for (name, expr) in names.iter().zip(left_cols.iter()) {
                     mut_join.columns.push(Column {
                         expr: expr.clone(),

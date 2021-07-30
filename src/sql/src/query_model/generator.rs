@@ -1019,15 +1019,16 @@ impl<'a> NameResolutionContext<'a> {
     /// this context or in the grouping box, if set.
     /// Adds the given column to the projection of all the intermediate boxes.
     fn pullup_column_reference(&self, model: &Model, expr: Expr) -> Result<Expr, anyhow::Error> {
+        let stop_at = if let Some(grouping_box) = self.grouping_box {
+            grouping_box
+        } else {
+            self.owner_box
+        };
         match expr {
             Expr::ColumnReference(mut c) => {
                 loop {
                     let q = model.get_quantifier(c.quantifier_id).borrow();
-                    if q.parent_box == self.owner_box
-                        || self
-                            .grouping_box
-                            .map_or(false, |grouping_box| q.parent_box == grouping_box)
-                    {
+                    if q.parent_box == stop_at {
                         // We have reached a quantifier within either the owner box
                         // or the grouping box. Expressions are lifted through
                         // the projection of the grouping box through

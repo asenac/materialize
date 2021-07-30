@@ -305,7 +305,21 @@ impl<'a> ModelGeneratorImpl<'a> {
         for si in projection {
             match si {
                 ast::SelectItem::Wildcard => {
-                    for quantifier_id in context.quantifiers.iter() {
+                    // The default projection is given by the join box. For GROUP BY
+                    // queries, the join box is the Select box under the Grouping box.
+                    let input_box = if let Some(grouping_box) = context.grouping_box {
+                        let grouping_box = self.model.get_box(grouping_box).borrow();
+                        assert!(grouping_box.quantifiers.len() == 1);
+                        let input_q = self
+                            .model
+                            .get_quantifier(*grouping_box.quantifiers.iter().next().unwrap())
+                            .borrow();
+                        input_q.input_box
+                    } else {
+                        context.owner_box
+                    };
+                    let quantifiers = self.model.get_box(input_box).borrow().quantifiers.clone();
+                    for quantifier_id in quantifiers.iter() {
                         self.add_all_columns_to_projection(query_box, context, *quantifier_id)?;
                     }
                 }

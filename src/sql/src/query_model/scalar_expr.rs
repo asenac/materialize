@@ -53,6 +53,7 @@ impl fmt::Display for Expr {
 }
 
 impl Expr {
+    // @todo use a generic visit method
     pub fn collect_column_references_from_context(
         &self,
         context: &QuantifierSet,

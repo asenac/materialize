@@ -302,36 +302,11 @@ impl<'a> ModelGeneratorImpl<'a> {
     ) -> Result<(), anyhow::Error> {
         use sql_parser::ast;
 
-        // Add all columns projected by the given quantifier to the projection
-        // of the current box. Returns an error in any column is not liftable
-        // all the way up to the owner box of the context of the quantifier.
-        let add_all_columns_to_projection = |model: &Model,
-                                             quantifier_context: &NameResolutionContext,
-                                             quantifier_id: QuantifierId|
-         -> Result<(), anyhow::Error> {
-            let q = model.get_quantifier(quantifier_id);
-            let bq = q.borrow();
-            let input_box = model.get_box(bq.input_box).borrow();
-            for (position, c) in input_box.columns.iter().enumerate() {
-                let expr = Expr::ColumnReference(ColumnReference {
-                    quantifier_id,
-                    position,
-                });
-                let expr = quantifier_context.pullup_column_reference(model, expr)?;
-                let expr = quantifier_context.pullup_expression_through_group_by(model, expr)?;
-                model.get_box(query_box).borrow_mut().columns.push(Column {
-                    expr,
-                    alias: c.alias.clone(),
-                });
-            }
-            Ok(())
-        };
-
         for si in projection {
             match si {
                 ast::SelectItem::Wildcard => {
                     for quantifier_id in context.quantifiers.iter() {
-                        add_all_columns_to_projection(self.model, context, *quantifier_id)?;
+                        self.add_all_columns_to_projection(query_box, context, *quantifier_id)?;
                     }
                 }
                 ast::SelectItem::Expr {
@@ -342,7 +317,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                     if let Some((context, quantifier_id)) =
                         context.resolve_quantifier(self.model, table_name.last().unwrap())
                     {
-                        add_all_columns_to_projection(self.model, context, quantifier_id)?;
+                        self.add_all_columns_to_projection(query_box, context, quantifier_id)?;
                     } else {
                         bail!("unknown table {:?}", table_name);
                     }
@@ -439,19 +414,19 @@ impl<'a> ModelGeneratorImpl<'a> {
             let mut join_context = NameResolutionContext::for_join(join_id, context);
 
             // keep processing the join tree recursively
-            let _left_q = self.process_join_tree(
+            let left_q = self.process_join_tree(
                 leftmost_relation,
                 &joins[..joins.len() - 1],
                 left_q_type,
                 &mut join_context,
             )?;
-            let _right_q =
+            let right_q =
                 self.process_table_factor(&join.relation, right_q_type, &mut join_context)?;
 
             match &join.join_operator {
                 sql_parser::ast::JoinOperator::CrossJoin => {
-                    let join = self.model.get_box(join_id);
-                    join.borrow_mut().add_all_input_columns(self.model);
+                    self.add_all_columns_to_projection(join_id, &join_context, left_q)?;
+                    self.add_all_columns_to_projection(join_id, &join_context, right_q)?;
                 }
                 sql_parser::ast::JoinOperator::Inner(constraint)
                 | sql_parser::ast::JoinOperator::FullOuter(constraint)
@@ -726,6 +701,37 @@ impl<'a> ModelGeneratorImpl<'a> {
         } else {
             input_box
         }
+    }
+
+    /// Add all columns projected by the given quantifier to the projection
+    /// of the given box. Returns an error in any column is not liftable
+    /// all the way up to the owner box of the context of the quantifier.
+    fn add_all_columns_to_projection(
+        &self,
+        query_box: BoxId,
+        quantifier_context: &NameResolutionContext,
+        quantifier_id: QuantifierId,
+    ) -> Result<(), anyhow::Error> {
+        let q = self.model.get_quantifier(quantifier_id);
+        let bq = q.borrow();
+        let input_box = self.model.get_box(bq.input_box).borrow();
+        for (position, c) in input_box.columns.iter().enumerate() {
+            let expr = Expr::ColumnReference(ColumnReference {
+                quantifier_id,
+                position,
+            });
+            let expr = quantifier_context.pullup_column_reference(self.model, expr)?;
+            let expr = quantifier_context.pullup_expression_through_group_by(self.model, expr)?;
+            self.model
+                .get_box(query_box)
+                .borrow_mut()
+                .columns
+                .push(Column {
+                    expr,
+                    alias: c.alias.clone(),
+                });
+        }
+        Ok(())
     }
 
     /// @todo support for RawName::Id

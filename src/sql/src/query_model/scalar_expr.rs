@@ -7,7 +7,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use expr::VariadicFunc;
+use expr::{BinaryFunc, VariadicFunc};
 use std::cell::Ref;
 use std::collections::HashSet;
 use std::fmt;
@@ -18,6 +18,11 @@ use crate::query_model::{Model, QuantifierId, QuantifierSet, QueryBox};
 pub enum Expr {
     ColumnReference(ColumnReference),
     BaseColumn(BaseColumn),
+    CallBinary {
+        func: BinaryFunc,
+        expr1: Box<Expr>,
+        expr2: Box<Expr>,
+    },
     CallVariadic {
         func: VariadicFunc,
         exprs: Vec<Expr>,
@@ -32,6 +37,13 @@ impl fmt::Display for Expr {
             }
             Expr::BaseColumn(c) => {
                 write!(f, "C{}", c.position)
+            }
+            Expr::CallBinary { func, expr1, expr2 } => {
+                if func.is_infix_op() {
+                    write!(f, "({} {} {})", expr1, func, expr2)
+                } else {
+                    write!(f, "{}({}, {})", func, expr1, expr2)
+                }
             }
             Expr::CallVariadic { func, exprs } => {
                 write!(f, "{}({})", func, ore::str::separated(", ", exprs.clone()))
@@ -53,6 +65,14 @@ impl Expr {
                 }
             }
             Expr::BaseColumn(_) => {}
+            Expr::CallBinary {
+                func: _,
+                expr1,
+                expr2,
+            } => {
+                expr1.collect_column_references_from_context(context, column_refs);
+                expr2.collect_column_references_from_context(context, column_refs);
+            }
             Expr::CallVariadic { func: _, exprs } => {
                 for e in exprs.iter() {
                     e.collect_column_references_from_context(context, column_refs);

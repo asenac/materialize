@@ -269,8 +269,8 @@ impl<'a> ModelGeneratorImpl<'a> {
                 .make_quantifier(QuantifierType::Foreach, grouping_box, query_box);
         }
 
-        let base_quantifiers = join_context.quantifiers;
-        context.merge_quantifiers(base_quantifiers.into_iter());
+        let base_quantifiers = join_context.disown_quantifiers();
+        context.merge_quantifiers(base_quantifiers);
 
         if let Some(having) = &select.having {
             let predicate = self.process_expr(having, context, Some(query_box))?;
@@ -461,8 +461,8 @@ impl<'a> ModelGeneratorImpl<'a> {
                 }
             }
 
-            let child_quantifiers = join_context.quantifiers;
-            context.merge_quantifiers(child_quantifiers.into_iter());
+            let child_quantifiers = join_context.disown_quantifiers();
+            context.merge_quantifiers(child_quantifiers);
 
             // add the join as a quantifier in the parent join
             let quantifier_id =
@@ -517,8 +517,8 @@ impl<'a> ModelGeneratorImpl<'a> {
                 // if the nested join doesn't have an alias, its base tables are
                 // visible from the parent join scope
                 if alias.is_none() {
-                    let child_quantifiers = join_context.quantifiers;
-                    context.merge_quantifiers(child_quantifiers.into_iter());
+                    let child_quantifiers = join_context.disown_quantifiers();
+                    context.merge_quantifiers(child_quantifiers);
                 }
 
                 // project everything
@@ -757,6 +757,9 @@ struct NameResolutionContext<'a> {
     owner_box: BoxId,
     /// leaf quantifiers for resolving column names
     quantifiers: Vec<QuantifierId>,
+    /// the size of the default projections of the intermediate boxes from
+    /// the leaf quantifiers up to the owner_box/grouping_box.
+    default_projections: HashMap<BoxId, usize>,
     grouping_box: Option<BoxId>,
     /// CTEs visibile within this context
     ctes: HashMap<Ident, BoxId>,
@@ -791,6 +794,7 @@ impl<'a> NameResolutionContext<'a> {
         Self {
             owner_box,
             quantifiers: Vec::new(),
+            default_projections: HashMap::new(),
             grouping_box: None,
             ctes: HashMap::new(),
             parent_context,
@@ -805,6 +809,7 @@ impl<'a> NameResolutionContext<'a> {
         Self {
             owner_box: join_box,
             quantifiers: Vec::new(),
+            default_projections: HashMap::new(),
             grouping_box: None,
             ctes: HashMap::new(),
             parent_context: sibling_context.parent_context.clone(),
@@ -826,11 +831,13 @@ impl<'a> NameResolutionContext<'a> {
         self.use_box_projection = true;
     }
 
-    fn merge_quantifiers<I>(&mut self, quantifiers: I)
-    where
-        I: IntoIterator<Item = QuantifierId>,
-    {
-        self.quantifiers.extend(quantifiers);
+    fn disown_quantifiers(self) -> (Vec<QuantifierId>, HashMap<BoxId, usize>) {
+        (self.quantifiers, self.default_projections)
+    }
+
+    fn merge_quantifiers(&mut self, quantifiers: (Vec<QuantifierId>, HashMap<BoxId, usize>)) {
+        self.quantifiers.extend(quantifiers.0);
+        self.default_projections.extend(quantifiers.1);
     }
 
     fn resolve_cte(&self, name: &Ident) -> Option<BoxId> {

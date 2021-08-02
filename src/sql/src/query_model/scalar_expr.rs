@@ -7,7 +7,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use expr::{BinaryFunc, VariadicFunc};
+use expr::{AggregateFunc, BinaryFunc, VariadicFunc};
 use std::cell::Ref;
 use std::collections::HashSet;
 use std::fmt;
@@ -26,6 +26,14 @@ pub enum Expr {
     CallVariadic {
         func: VariadicFunc,
         exprs: Vec<Expr>,
+    },
+    CallAggregate {
+        /// Names the aggregation function.
+        func: AggregateFunc,
+        /// An expression which extracts from each row the input to `func`.
+        expr: Box<Expr>,
+        /// Should the aggregation be applied only to distinct results in each group.
+        distinct: bool,
     },
 }
 
@@ -47,6 +55,19 @@ impl fmt::Display for Expr {
             }
             Expr::CallVariadic { func, exprs } => {
                 write!(f, "{}({})", func, ore::str::separated(", ", exprs.clone()))
+            }
+            Expr::CallAggregate {
+                func,
+                expr,
+                distinct,
+            } => {
+                write!(
+                    f,
+                    "{}({}{})",
+                    func,
+                    if *distinct { "distinct " } else { "" },
+                    expr
+                )
             }
         }
     }
@@ -79,6 +100,13 @@ impl Expr {
                     e.collect_column_references_from_context(context, column_refs);
                 }
             }
+            Expr::CallAggregate {
+                func: _,
+                expr,
+                distinct: _,
+            } => {
+                expr.collect_column_references_from_context(context, column_refs);
+            }
         }
     }
 
@@ -101,6 +129,13 @@ impl Expr {
                 for e in exprs.iter_mut() {
                     e.visit_mut(f)?;
                 }
+            }
+            Expr::CallAggregate {
+                func: _,
+                expr,
+                distinct: _,
+            } => {
+                expr.visit_mut(f)?;
             }
         }
         Ok(())

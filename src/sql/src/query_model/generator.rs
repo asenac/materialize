@@ -212,6 +212,7 @@ impl<'a> ModelGeneratorImpl<'a> {
 
         let projection = self.process_projection(&select.projection, join_box, &join_context)?;
 
+        let mut grouping_box_id = None;
         if is_grouping {
             let mut grouping_key = Vec::new();
             for key_item in select.group_by.iter() {
@@ -262,7 +263,7 @@ impl<'a> ModelGeneratorImpl<'a> {
 
                 // any expression on top of a grouping box must be liftable through
                 // its projection
-                context.grouping_box = Some(grouping_box.id);
+                grouping_box_id = Some(grouping_box.id);
             }
 
             // make the grouping box the input of the parent select box
@@ -271,11 +272,9 @@ impl<'a> ModelGeneratorImpl<'a> {
                 .make_quantifier(QuantifierType::Foreach, grouping_box, query_box);
         }
 
-        let base_quantifiers = join_context.disown_quantifiers();
-        context.merge_quantifiers(base_quantifiers);
-
         if let Some(having) = &select.having {
-            let predicate = self.process_expr(having, context, Some(query_box))?;
+            let predicate = self.process_expr(having, &join_context, Some(join_box))?;
+            let predicate = self.pullup_expression_through_group_by(&grouping_box_id, predicate)?;
             self.model
                 .get_box(query_box)
                 .borrow_mut()
@@ -284,7 +283,7 @@ impl<'a> ModelGeneratorImpl<'a> {
 
         // lift expressions through the grouping box and add them to the projection
         for (expr, alias) in projection.into_iter() {
-            let expr = context.pullup_expression_through_group_by(self.model, expr)?;
+            let expr = self.pullup_expression_through_group_by(&grouping_box_id, expr)?;
             self.model
                 .get_box(query_box)
                 .borrow_mut()
@@ -301,6 +300,10 @@ impl<'a> ModelGeneratorImpl<'a> {
                 _ => bail!("@todo unsupported stuff"),
             }
         }
+
+        let base_quantifiers = join_context.disown_quantifiers();
+        context.merge_quantifiers(base_quantifiers);
+
         Ok(())
     }
 
@@ -308,7 +311,7 @@ impl<'a> ModelGeneratorImpl<'a> {
     fn process_projection(
         &mut self,
         projection: &Vec<sql_parser::ast::SelectItem<Raw>>,
-        query_box: BoxId,
+        join_id: BoxId,
         context: &NameResolutionContext,
     ) -> Result<Vec<(Expr, Option<Ident>)>, anyhow::Error> {
         use sql_parser::ast;
@@ -318,20 +321,8 @@ impl<'a> ModelGeneratorImpl<'a> {
         for si in projection {
             match si {
                 ast::SelectItem::Wildcard => {
-                    // The default projection is given by the join box. For GROUP BY
-                    // queries, the join box is the Select box under the Grouping box.
-                    let input_box = if let Some(grouping_box) = context.grouping_box {
-                        let grouping_box = self.model.get_box(grouping_box).borrow();
-                        assert!(grouping_box.quantifiers.len() == 1);
-                        let input_q = self
-                            .model
-                            .get_quantifier(*grouping_box.quantifiers.iter().next().unwrap())
-                            .borrow();
-                        input_q.input_box
-                    } else {
-                        context.owner_box
-                    };
-                    let quantifiers = self.model.get_box(input_box).borrow().quantifiers.clone();
+                    // The default projection is given by the join box.
+                    let quantifiers = self.model.get_box(join_id).borrow().quantifiers.clone();
                     for quantifier_id in quantifiers.iter() {
                         result.extend(self.expand_projection(context, *quantifier_id)?);
                     }
@@ -350,7 +341,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                     }
                 }
                 ast::SelectItem::Expr { expr, alias } => {
-                    let expr = self.process_join_expr(expr, context, Some(query_box))?;
+                    let expr = self.process_expr(expr, context, Some(join_id))?;
                     let alias = if let Some(alias) = alias {
                         Some(alias.clone())
                     } else {
@@ -738,21 +729,6 @@ impl<'a> ModelGeneratorImpl<'a> {
         context: &NameResolutionContext,
         join_id: Option<BoxId>,
     ) -> Result<Expr, anyhow::Error> {
-        let expr = self.process_join_expr(expr, context, join_id)?;
-
-        // Try to lift the expression through the projection of the
-        // grouping box, if set.
-        context.pullup_expression_through_group_by(self.model, expr)
-    }
-
-    /// Process the given expression, resolving its names against the given
-    /// context.
-    fn process_join_expr(
-        &mut self,
-        expr: &sql_parser::ast::Expr<Raw>,
-        context: &NameResolutionContext,
-        join_id: Option<BoxId>,
-    ) -> Result<Expr, anyhow::Error> {
         use sql_parser::ast;
         let expr = match expr {
             ast::Expr::Identifier(id) => self.process_identifier(id, context)?,
@@ -859,6 +835,49 @@ impl<'a> ModelGeneratorImpl<'a> {
         Ok(projection)
     }
 
+    /// Lifts an expression in the context of the `Select` box under a `Grouping` box
+    /// through the projection of the `Grouping` box.
+    fn pullup_expression_through_group_by(
+        &self,
+        grouping_box: &Option<BoxId>,
+        expr: Expr,
+    ) -> Result<Expr, anyhow::Error> {
+        if let Some(grouping_box) = grouping_box {
+            let grouping_box = self.model.get_box(*grouping_box).borrow();
+            assert!(grouping_box.quantifiers.len() == 1);
+            let input_quantifier = grouping_box.quantifiers.iter().next().unwrap();
+            let input_box = self
+                .model
+                .get_quantifier(*input_quantifier)
+                .borrow()
+                .input_box;
+            let position = self
+                .model
+                .get_box(input_box)
+                .borrow_mut()
+                .add_column_if_not_exists(expr, None);
+            let expr = Expr::ColumnReference(ColumnReference {
+                quantifier_id: *input_quantifier,
+                position,
+            });
+            // make sure the expression can be built from expressions in the projection
+            // of the grouping box
+            // @todo try recursively
+            if let Some(position) = grouping_box.find_column(&expr) {
+                assert!(grouping_box.ranging_quantifiers.len() == 1);
+                let quantifier_id = *grouping_box.ranging_quantifiers.iter().next().unwrap();
+                Ok(Expr::ColumnReference(ColumnReference {
+                    quantifier_id,
+                    position,
+                }))
+            } else {
+                bail!("{} doesn't appear in the GROUP BY clause", expr);
+            }
+        } else {
+            Ok(expr)
+        }
+    }
+
     /// @todo support for RawName::Id
     fn extract_name(&self, name: &sql_parser::ast::RawName) -> Result<Ident, anyhow::Error> {
         let name = match name {
@@ -891,9 +910,8 @@ struct NameResolutionContext<'a> {
     /// leaf quantifiers for resolving column names
     quantifiers: Vec<QuantifierId>,
     /// the size of the default projections of the intermediate boxes from
-    /// the leaf quantifiers up to the owner_box/grouping_box.
+    /// the leaf quantifiers up to the owner_box.
     default_projections: HashMap<BoxId, usize>,
-    grouping_box: Option<BoxId>,
     /// CTEs visibile within this context
     ctes: HashMap<Ident, BoxId>,
     /// an optional parent context
@@ -928,7 +946,6 @@ impl<'a> NameResolutionContext<'a> {
             owner_box,
             quantifiers: Vec::new(),
             default_projections: HashMap::new(),
-            grouping_box: None,
             ctes: HashMap::new(),
             parent_context,
             sibling_context: None,
@@ -943,7 +960,6 @@ impl<'a> NameResolutionContext<'a> {
             owner_box: join_box,
             quantifiers: Vec::new(),
             default_projections: HashMap::new(),
-            grouping_box: None,
             ctes: HashMap::new(),
             parent_context: sibling_context.parent_context.clone(),
             sibling_context: Some(sibling_context),
@@ -1150,16 +1166,11 @@ impl<'a> NameResolutionContext<'a> {
     /// this context or in the grouping box, if set.
     /// Adds the given column to the projection of all the intermediate boxes.
     fn pullup_column_reference(&self, model: &Model, expr: Expr) -> Result<Expr, anyhow::Error> {
-        let stop_at = self.get_join_box(model);
         match expr {
             Expr::ColumnReference(mut c) => {
                 loop {
                     let q = model.get_quantifier(c.quantifier_id).borrow();
-                    if q.parent_box == stop_at {
-                        // We have reached a quantifier within either the owner box
-                        // or the grouping box. Expressions are lifted through
-                        // the projection of the grouping box through
-                        // `pullup_expression_through_group_by`.
+                    if q.parent_box == self.owner_box {
                         break;
                     }
                     let alias = {
@@ -1181,53 +1192,6 @@ impl<'a> NameResolutionContext<'a> {
                 Ok(Expr::ColumnReference(c.clone()))
             }
             _ => panic!("expected column reference"),
-        }
-    }
-
-    fn pullup_expression_through_group_by(
-        &self,
-        model: &Model,
-        expr: Expr,
-    ) -> Result<Expr, anyhow::Error> {
-        if let Some(grouping_box) = self.grouping_box {
-            let grouping_box = model.get_box(grouping_box).borrow();
-            assert!(grouping_box.quantifiers.len() == 1);
-            let input_quantifier = grouping_box.quantifiers.iter().next().unwrap();
-            let input_box = self.get_join_box(model);
-            let position = model
-                .get_box(input_box)
-                .borrow_mut()
-                .add_column_if_not_exists(expr, None);
-            let expr = Expr::ColumnReference(ColumnReference {
-                quantifier_id: *input_quantifier,
-                position,
-            });
-            // make sure the expression can be built from expressions in the projection
-            // of the grouping box
-            // @todo try recursively
-            if let Some(position) = grouping_box.find_column(&expr) {
-                assert!(grouping_box.ranging_quantifiers.len() == 1);
-                let quantifier_id = *grouping_box.ranging_quantifiers.iter().next().unwrap();
-                Ok(Expr::ColumnReference(ColumnReference {
-                    quantifier_id,
-                    position,
-                }))
-            } else {
-                bail!("{} doesn't appear in the GROUP BY clause", expr);
-            }
-        } else {
-            Ok(expr)
-        }
-    }
-
-    fn get_join_box(&self, model: &Model) -> BoxId {
-        if let Some(grouping_box) = self.grouping_box {
-            let grouping_box = model.get_box(grouping_box).borrow();
-            assert!(grouping_box.quantifiers.len() == 1);
-            let input_quantifier = grouping_box.quantifiers.iter().next().unwrap();
-            model.get_quantifier(*input_quantifier).borrow().input_box
-        } else {
-            self.owner_box
         }
     }
 }

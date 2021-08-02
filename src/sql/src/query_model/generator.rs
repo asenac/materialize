@@ -210,6 +210,8 @@ impl<'a> ModelGeneratorImpl<'a> {
                 .add_predicate(Box::new(predicate));
         }
 
+        let projection = self.process_projection(&select.projection, join_box, &join_context)?;
+
         if is_grouping {
             let mut grouping_key = Vec::new();
             for key_item in select.group_by.iter() {
@@ -280,7 +282,15 @@ impl<'a> ModelGeneratorImpl<'a> {
                 .add_predicate(Box::new(predicate));
         }
 
-        self.process_projection(&select.projection, query_box, context)?;
+        // lift expressions through the grouping box and add them to the projection
+        for (expr, alias) in projection.into_iter() {
+            let expr = context.pullup_expression_through_group_by(self.model, expr)?;
+            self.model
+                .get_box(query_box)
+                .borrow_mut()
+                .columns
+                .push(Column { expr, alias });
+        }
 
         if let Some(distinct) = &select.distinct {
             match distinct {
@@ -294,13 +304,16 @@ impl<'a> ModelGeneratorImpl<'a> {
         Ok(())
     }
 
+    /// Process the projection of the query returning all expressions and aliases.
     fn process_projection(
         &mut self,
         projection: &Vec<sql_parser::ast::SelectItem<Raw>>,
         query_box: BoxId,
-        context: &mut NameResolutionContext,
-    ) -> Result<(), anyhow::Error> {
+        context: &NameResolutionContext,
+    ) -> Result<Vec<(Expr, Option<Ident>)>, anyhow::Error> {
         use sql_parser::ast;
+
+        let mut result = Vec::new();
 
         for si in projection {
             match si {
@@ -320,7 +333,7 @@ impl<'a> ModelGeneratorImpl<'a> {
                     };
                     let quantifiers = self.model.get_box(input_box).borrow().quantifiers.clone();
                     for quantifier_id in quantifiers.iter() {
-                        self.add_all_columns_to_projection(query_box, context, *quantifier_id)?;
+                        result.extend(self.expand_projection(context, *quantifier_id)?);
                     }
                 }
                 ast::SelectItem::Expr {
@@ -331,27 +344,23 @@ impl<'a> ModelGeneratorImpl<'a> {
                     if let Some((context, quantifier_id)) =
                         context.resolve_quantifier(self.model, table_name.last().unwrap())
                     {
-                        self.add_all_columns_to_projection(query_box, context, quantifier_id)?;
+                        result.extend(self.expand_projection(context, quantifier_id)?);
                     } else {
                         bail!("unknown table {:?}", table_name);
                     }
                 }
                 ast::SelectItem::Expr { expr, alias } => {
-                    let expr = self.process_expr(expr, context, Some(query_box))?;
+                    let expr = self.process_join_expr(expr, context, Some(query_box))?;
                     let alias = if let Some(alias) = alias {
                         Some(alias.clone())
                     } else {
                         self.get_expression_alias(&expr)
                     };
-                    self.model
-                        .get_box(query_box)
-                        .borrow_mut()
-                        .columns
-                        .push(Column { expr, alias });
+                    result.push((expr, alias));
                 }
             }
         }
-        Ok(())
+        Ok(result)
     }
 
     /// Process the FROM clause of a Select represented by the given `query_box`.
@@ -439,8 +448,8 @@ impl<'a> ModelGeneratorImpl<'a> {
 
             match &join.join_operator {
                 sql_parser::ast::JoinOperator::CrossJoin => {
-                    self.add_all_columns_to_projection(join_id, &join_context, left_q)?;
-                    self.add_all_columns_to_projection(join_id, &join_context, right_q)?;
+                    let join = self.model.get_box(join_id);
+                    join.borrow_mut().add_all_input_columns(self.model);
                 }
                 sql_parser::ast::JoinOperator::Inner(constraint)
                 | sql_parser::ast::JoinOperator::FullOuter(constraint)
@@ -729,14 +738,16 @@ impl<'a> ModelGeneratorImpl<'a> {
         context: &NameResolutionContext,
         join_id: Option<BoxId>,
     ) -> Result<Expr, anyhow::Error> {
-        let expr = self.process_expr_impl(expr, context, join_id)?;
+        let expr = self.process_join_expr(expr, context, join_id)?;
 
         // Try to lift the expression through the projection of the
         // grouping box, if set.
         context.pullup_expression_through_group_by(self.model, expr)
     }
 
-    fn process_expr_impl(
+    /// Process the given expression, resolving its names against the given
+    /// context.
+    fn process_join_expr(
         &mut self,
         expr: &sql_parser::ast::Expr<Raw>,
         context: &NameResolutionContext,
@@ -814,15 +825,13 @@ impl<'a> ModelGeneratorImpl<'a> {
         }
     }
 
-    /// Add all columns projected by the given quantifier to the projection
-    /// of the given box. Returns an error in any column is not liftable
-    /// all the way up to the owner box of the context of the quantifier.
-    fn add_all_columns_to_projection(
+    /// Return the projection of the given quantifier.
+    fn expand_projection(
         &self,
-        query_box: BoxId,
         quantifier_context: &NameResolutionContext,
         quantifier_id: QuantifierId,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<Vec<(Expr, Option<Ident>)>, anyhow::Error> {
+        let mut projection = Vec::new();
         let q = self.model.get_quantifier(quantifier_id);
         let bq = q.borrow();
         let input_box = self.model.get_box(bq.input_box).borrow();
@@ -845,17 +854,9 @@ impl<'a> ModelGeneratorImpl<'a> {
                 position,
             });
             let expr = quantifier_context.pullup_column_reference(self.model, expr)?;
-            let expr = quantifier_context.pullup_expression_through_group_by(self.model, expr)?;
-            self.model
-                .get_box(query_box)
-                .borrow_mut()
-                .columns
-                .push(Column {
-                    expr,
-                    alias: c.alias.clone(),
-                });
+            projection.push((expr, c.alias.clone()));
         }
-        Ok(())
+        Ok(projection)
     }
 
     /// @todo support for RawName::Id
@@ -1149,11 +1150,7 @@ impl<'a> NameResolutionContext<'a> {
     /// this context or in the grouping box, if set.
     /// Adds the given column to the projection of all the intermediate boxes.
     fn pullup_column_reference(&self, model: &Model, expr: Expr) -> Result<Expr, anyhow::Error> {
-        let stop_at = if let Some(grouping_box) = self.grouping_box {
-            grouping_box
-        } else {
-            self.owner_box
-        };
+        let stop_at = self.get_join_box(model);
         match expr {
             Expr::ColumnReference(mut c) => {
                 loop {
@@ -1194,6 +1191,19 @@ impl<'a> NameResolutionContext<'a> {
     ) -> Result<Expr, anyhow::Error> {
         if let Some(grouping_box) = self.grouping_box {
             let grouping_box = model.get_box(grouping_box).borrow();
+            assert!(grouping_box.quantifiers.len() == 1);
+            let input_quantifier = grouping_box.quantifiers.iter().next().unwrap();
+            let input_box = self.get_join_box(model);
+            let position = model
+                .get_box(input_box)
+                .borrow_mut()
+                .add_column_if_not_exists(expr, None);
+            let expr = Expr::ColumnReference(ColumnReference {
+                quantifier_id: *input_quantifier,
+                position,
+            });
+            // make sure the expression can be built from expressions in the projection
+            // of the grouping box
             // @todo try recursively
             if let Some(position) = grouping_box.find_column(&expr) {
                 assert!(grouping_box.ranging_quantifiers.len() == 1);
@@ -1207,6 +1217,17 @@ impl<'a> NameResolutionContext<'a> {
             }
         } else {
             Ok(expr)
+        }
+    }
+
+    fn get_join_box(&self, model: &Model) -> BoxId {
+        if let Some(grouping_box) = self.grouping_box {
+            let grouping_box = model.get_box(grouping_box).borrow();
+            assert!(grouping_box.quantifiers.len() == 1);
+            let input_quantifier = grouping_box.quantifiers.iter().next().unwrap();
+            model.get_quantifier(*input_quantifier).borrow().input_box
+        } else {
+            self.owner_box
         }
     }
 }

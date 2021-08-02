@@ -81,6 +81,30 @@ impl Expr {
             }
         }
     }
+
+    pub fn visit_mut<F, E>(&mut self, f: &mut F) -> Result<(), E>
+    where
+        F: FnMut(&mut Self) -> Result<(), E>,
+    {
+        f(self)?;
+        match self {
+            Expr::ColumnReference(_) | Expr::BaseColumn(_) => {}
+            Expr::CallBinary {
+                func: _,
+                expr1,
+                expr2,
+            } => {
+                expr1.visit_mut(f)?;
+                expr2.visit_mut(f)?;
+            }
+            Expr::CallVariadic { func: _, exprs } => {
+                for e in exprs.iter_mut() {
+                    e.visit_mut(f)?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]

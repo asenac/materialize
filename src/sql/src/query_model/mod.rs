@@ -488,6 +488,7 @@ mod tests {
             "select * from a as a(a, b) inner join b as b(a, c) using (a) where b.a",
             // @todo a is not ambiguous
             // "select a from a as a(a, b) inner join b as b(a, c) using (a)",
+            "select * from a as a(a, b) where (select a.a from b as b(a, c) group by a.a)",
         ];
         for test_case in test_cases {
             let parsed = parse_statements(test_case).unwrap();

@@ -39,13 +39,13 @@ use crate::{ExprHumanizer, Id, JoinImplementation, LocalId, MirRelationExpr};
 /// described in the module docs. Additional information may be attached to the
 /// explanation via the other public methods on the type.
 #[derive(Debug)]
-pub struct ViewExplanation<'a> {
+pub struct ViewExplanation<'a, ExprType: NodeFormatter> {
     expr_humanizer: &'a dyn ExprHumanizer,
     /// One `ExplanationNode` for each `MirRelationExpr` in the plan, in
     /// left-to-right post-order.
-    nodes: Vec<ExplanationNode<'a>>,
+    nodes: Vec<ExplanationNode<'a, ExprType>>,
     /// Records the chain ID that was assigned to each expression.
-    expr_chains: HashMap<*const MirRelationExpr, usize>,
+    expr_chains: HashMap<*const ExprType, usize>,
     /// Records the chain ID that was assigned to each let.
     local_id_chains: HashMap<LocalId, usize>,
     /// Records the local ID that corresponds to a chain ID, if any.
@@ -56,16 +56,20 @@ pub struct ViewExplanation<'a> {
 }
 
 #[derive(Debug)]
-pub struct ExplanationNode<'a> {
+pub struct ExplanationNode<'a, ExprType> {
     /// The expression being explained.
-    pub expr: &'a MirRelationExpr,
+    pub expr: &'a ExprType,
     /// The type of the expression, if desired.
     pub typ: Option<RelationType>,
     /// The ID of the linear chain to which this node belongs.
     pub chain: usize,
 }
 
-impl<'a> fmt::Display for ViewExplanation<'a> {
+pub trait NodeFormatter: Sized {
+    fn fmt_node(&self, view: &ViewExplanation<Self>, f: &mut fmt::Formatter) -> fmt::Result;
+}
+
+impl<'a, ExprType: NodeFormatter> fmt::Display for ViewExplanation<'a, ExprType> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut prev_chain = usize::max_value();
         for node in &self.nodes {
@@ -87,18 +91,21 @@ impl<'a> fmt::Display for ViewExplanation<'a> {
     }
 }
 
-impl<'a> ViewExplanation<'a> {
+impl<'a> ViewExplanation<'a, MirRelationExpr> {
     pub fn new(
         expr: &'a MirRelationExpr,
         expr_humanizer: &'a dyn ExprHumanizer,
-    ) -> ViewExplanation<'a> {
+    ) -> ViewExplanation<'a, MirRelationExpr> {
         use MirRelationExpr::*;
 
         // Do a post-order traversal of the expression, grouping "chains" of
         // nodes together as we go. We have to break the chain whenever we
         // encounter a node with multiple inputs, like a join.
 
-        fn walk<'a>(expr: &'a MirRelationExpr, explanation: &mut ViewExplanation<'a>) {
+        fn walk<'a>(
+            expr: &'a MirRelationExpr,
+            explanation: &mut ViewExplanation<'a, MirRelationExpr>,
+        ) {
             // First, walk the children, in order to perform a post-order
             // traversal.
             match expr {
@@ -147,7 +154,7 @@ impl<'a> ViewExplanation<'a> {
                 .insert(expr as *const MirRelationExpr, explanation.chain);
         }
 
-        fn walk_many<'a, E>(exprs: E, explanation: &mut ViewExplanation<'a>)
+        fn walk_many<'a, E>(exprs: E, explanation: &mut ViewExplanation<'a, MirRelationExpr>)
         where
             E: IntoIterator<Item = &'a MirRelationExpr>,
         {
@@ -187,11 +194,49 @@ impl<'a> ViewExplanation<'a> {
             node.typ = Some(node.expr.typ());
         }
     }
+}
 
-    fn fmt_node(&self, f: &mut fmt::Formatter, node: &ExplanationNode) -> fmt::Result {
+impl<'a, ExprType: NodeFormatter> ViewExplanation<'a, ExprType> {
+    fn fmt_node(&self, f: &mut fmt::Formatter, node: &ExplanationNode<ExprType>) -> fmt::Result {
+        node.expr.fmt_node(self, f)?;
+
+        if let Some(RelationType { column_types, keys }) = &node.typ {
+            let column_types: Vec<_> = column_types
+                .iter()
+                .map(|c| self.expr_humanizer.humanize_column_type(c))
+                .collect();
+            writeln!(f, "| | types = ({})", separated(", ", column_types))?;
+            writeln!(
+                f,
+                "| | keys = ({})",
+                separated(
+                    ", ",
+                    keys.iter().map(|key| bracketed("(", ")", Indices(key)))
+                )
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Retrieves the chain ID for the specified expression.
+    ///
+    /// The `ExplanationNode` for `expr` must have already been inserted into
+    /// the explanation.
+    fn expr_chain(&self, expr: &ExprType) -> usize {
+        self.expr_chains[&(expr as *const ExprType)]
+    }
+}
+
+impl NodeFormatter for MirRelationExpr {
+    fn fmt_node(
+        &self,
+        view: &ViewExplanation<MirRelationExpr>,
+        f: &mut fmt::Formatter,
+    ) -> fmt::Result {
         use MirRelationExpr::*;
 
-        match node.expr {
+        match self {
             Constant { rows, .. } => {
                 write!(f, "| Constant")?;
                 match rows {
@@ -212,7 +257,7 @@ impl<'a> ViewExplanation<'a> {
                 Id::Local(local_id) => writeln!(
                     f,
                     "| Get %{} ({})",
-                    self.local_id_chains
+                    view.local_id_chains
                         .get(local_id)
                         .map_or_else(|| "?".to_owned(), |i| i.to_string()),
                     local_id,
@@ -220,7 +265,7 @@ impl<'a> ViewExplanation<'a> {
                 Id::Global(id) => writeln!(
                     f,
                     "| Get {} ({})",
-                    self.expr_humanizer
+                    view.expr_humanizer
                         .humanize_id(*id)
                         .unwrap_or_else(|| "?".to_owned()),
                     id,
@@ -246,7 +291,7 @@ impl<'a> ViewExplanation<'a> {
             }
             Filter { predicates, .. } => writeln!(f, "| Filter {}", separated(", ", predicates))?,
             Join {
-                inputs,
+                inputs: join_inputs,
                 equivalences,
                 demand,
                 implementation,
@@ -256,9 +301,9 @@ impl<'a> ViewExplanation<'a> {
                     "| Join {}",
                     separated(
                         " ",
-                        inputs
+                        join_inputs
                             .iter()
-                            .map(|input| bracketed("%", "", self.expr_chain(input)))
+                            .map(|input| bracketed("%", "", view.expr_chain(input)))
                     ),
                 )?;
                 if !equivalences.is_empty() {
@@ -277,7 +322,51 @@ impl<'a> ViewExplanation<'a> {
                 }
                 writeln!(f)?;
                 write!(f, "| | implementation = ")?;
-                self.fmt_join_implementation(f, inputs, implementation)?;
+
+                match implementation {
+                    JoinImplementation::Differential((pos, first_arr), inputs) => writeln!(
+                        f,
+                        "Differential %{}{} {}",
+                        view.expr_chain(&join_inputs[*pos]),
+                        if let Some(arr) = first_arr {
+                            format!(".({})", separated(", ", arr))
+                        } else {
+                            "".to_string()
+                        },
+                        separated(
+                            " ",
+                            inputs.iter().map(|(pos, input)| {
+                                format!(
+                                    "%{}.({})",
+                                    view.expr_chain(&join_inputs[*pos]),
+                                    separated(", ", input)
+                                )
+                            })
+                        ),
+                    )?,
+                    JoinImplementation::DeltaQuery(inputs) => {
+                        writeln!(f, "DeltaQuery")?;
+                        for (pos, inputs) in inputs.iter().enumerate() {
+                            writeln!(
+                                f,
+                                "| |   delta %{} {}",
+                                view.expr_chain(&join_inputs[pos]),
+                                separated(
+                                    " ",
+                                    inputs.iter().map(|(pos, input)| {
+                                        format!(
+                                            "%{}.({})",
+                                            view.expr_chain(&join_inputs[*pos]),
+                                            separated(", ", input)
+                                        )
+                                    })
+                                )
+                            )?;
+                        }
+                    }
+                    JoinImplementation::Unimplemented => writeln!(f, "Unimplemented")?,
+                }
+
                 if let Some(demand) = demand {
                     writeln!(f, "| | demand = {}", bracketed("(", ")", Indices(demand)))?;
                 }
@@ -336,12 +425,12 @@ impl<'a> ViewExplanation<'a> {
             Union { base, inputs } => writeln!(
                 f,
                 "| Union %{} {}",
-                self.expr_chain(base),
+                view.expr_chain(base),
                 separated(
                     " ",
                     inputs
                         .iter()
-                        .map(|input| bracketed("%", "", self.expr_chain(input)))
+                        .map(|input| bracketed("%", "", view.expr_chain(input)))
                 )
             )?,
             ArrangeBy { keys, .. } => writeln!(
@@ -355,83 +444,7 @@ impl<'a> ViewExplanation<'a> {
             )?,
         }
 
-        if let Some(RelationType { column_types, keys }) = &node.typ {
-            let column_types: Vec<_> = column_types
-                .iter()
-                .map(|c| self.expr_humanizer.humanize_column_type(c))
-                .collect();
-            writeln!(f, "| | types = ({})", separated(", ", column_types))?;
-            writeln!(
-                f,
-                "| | keys = ({})",
-                separated(
-                    ", ",
-                    keys.iter().map(|key| bracketed("(", ")", Indices(key)))
-                )
-            )?;
-        }
-
         Ok(())
-    }
-
-    fn fmt_join_implementation(
-        &self,
-        f: &mut fmt::Formatter,
-        join_inputs: &[MirRelationExpr],
-        implementation: &JoinImplementation,
-    ) -> fmt::Result {
-        match implementation {
-            JoinImplementation::Differential((pos, first_arr), inputs) => writeln!(
-                f,
-                "Differential %{}{} {}",
-                self.expr_chain(&join_inputs[*pos]),
-                if let Some(arr) = first_arr {
-                    format!(".({})", separated(", ", arr))
-                } else {
-                    "".to_string()
-                },
-                separated(
-                    " ",
-                    inputs.iter().map(|(pos, input)| {
-                        format!(
-                            "%{}.({})",
-                            self.expr_chain(&join_inputs[*pos]),
-                            separated(", ", input)
-                        )
-                    })
-                ),
-            ),
-            JoinImplementation::DeltaQuery(inputs) => {
-                writeln!(f, "DeltaQuery")?;
-                for (pos, inputs) in inputs.iter().enumerate() {
-                    writeln!(
-                        f,
-                        "| |   delta %{} {}",
-                        self.expr_chain(&join_inputs[pos]),
-                        separated(
-                            " ",
-                            inputs.iter().map(|(pos, input)| {
-                                format!(
-                                    "%{}.({})",
-                                    self.expr_chain(&join_inputs[*pos]),
-                                    separated(", ", input)
-                                )
-                            })
-                        )
-                    )?;
-                }
-                Ok(())
-            }
-            JoinImplementation::Unimplemented => writeln!(f, "Unimplemented"),
-        }
-    }
-
-    /// Retrieves the chain ID for the specified expression.
-    ///
-    /// The `ExplanationNode` for `expr` must have already been inserted into
-    /// the explanation.
-    fn expr_chain(&self, expr: &MirRelationExpr) -> usize {
-        self.expr_chains[&(expr as *const MirRelationExpr)]
     }
 }
 

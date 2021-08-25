@@ -48,7 +48,7 @@ pub struct Explanation<'a> {
     /// Each source that has some [`LinearOperator`].
     sources: Vec<(GlobalId, &'a LinearOperator)>,
     /// One `ViewExplanation` per view in the dataflow.
-    views: Vec<(GlobalId, ViewExplanation<'a>)>,
+    views: Vec<(GlobalId, ViewExplanation<'a, MirRelationExpr>)>,
     /// An optional `RowSetFinishing` to mention at the end.
     finishing: Option<RowSetFinishing>,
 }

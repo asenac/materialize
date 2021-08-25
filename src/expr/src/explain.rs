@@ -39,7 +39,7 @@ use crate::{ExprHumanizer, Id, JoinImplementation, LocalId, MirRelationExpr};
 /// described in the module docs. Additional information may be attached to the
 /// explanation via the other public methods on the type.
 #[derive(Debug)]
-pub struct PlanExplanation<'a, ExprType: ExplainableIR> {
+pub struct PlanExplanation<'a, ExprType: ExplainableIRNode> {
     expr_humanizer: &'a dyn ExprHumanizer,
     /// One `ExplanationNode` for each `MirRelationExpr` in the plan, in
     /// left-to-right post-order.
@@ -66,15 +66,20 @@ pub struct ExplanationNode<'a, ExprType> {
 }
 
 pub trait ExplainableIR: Sized {
+    type Node;
+
     fn explain_plan<'a>(
         &'a self,
         expr_humanizer: &'a dyn ExprHumanizer,
-    ) -> PlanExplanation<'a, Self>;
-
+    ) -> PlanExplanation<'a, Self::Node>
+    where
+        <Self as ExplainableIR>::Node: ExplainableIRNode;
+}
+pub trait ExplainableIRNode: Sized {
     fn fmt_node(&self, view: &PlanExplanation<Self>, f: &mut fmt::Formatter) -> fmt::Result;
 }
 
-impl<'a, ExprType: ExplainableIR> fmt::Display for PlanExplanation<'a, ExprType> {
+impl<'a, ExprType: ExplainableIRNode> fmt::Display for PlanExplanation<'a, ExprType> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut prev_chain = usize::max_value();
         for node in &self.nodes {
@@ -106,7 +111,7 @@ impl<'a> PlanExplanation<'a, MirRelationExpr> {
     }
 }
 
-impl<'a, ExprType: ExplainableIR> PlanExplanation<'a, ExprType> {
+impl<'a, ExprType: ExplainableIRNode> PlanExplanation<'a, ExprType> {
     fn fmt_node(&self, f: &mut fmt::Formatter, node: &ExplanationNode<ExprType>) -> fmt::Result {
         node.expr.fmt_node(self, f)?;
 
@@ -139,6 +144,8 @@ impl<'a, ExprType: ExplainableIR> PlanExplanation<'a, ExprType> {
 }
 
 impl ExplainableIR for MirRelationExpr {
+    type Node = Self;
+
     fn explain_plan<'a>(
         &'a self,
         expr_humanizer: &'a dyn ExprHumanizer,
@@ -233,6 +240,9 @@ impl ExplainableIR for MirRelationExpr {
         walk(self, &mut explanation);
         explanation
     }
+}
+
+impl ExplainableIRNode for MirRelationExpr {
     fn fmt_node(
         &self,
         view: &PlanExplanation<MirRelationExpr>,

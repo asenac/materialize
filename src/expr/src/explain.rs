@@ -76,6 +76,8 @@ pub trait ExplainableIR: Sized {
         <Self as ExplainableIR>::Node: ExplainableIRNode;
 }
 pub trait ExplainableIRNode: Sized {
+    fn explain_types(&self) -> Option<RelationType>;
+
     fn fmt_node(&self, view: &PlanExplanation<Self>, f: &mut fmt::Formatter) -> fmt::Result;
 }
 
@@ -98,16 +100,6 @@ impl<'a, ExprType: ExplainableIRNode> fmt::Display for PlanExplanation<'a, ExprT
             self.fmt_node(f, node)?;
         }
         Ok(())
-    }
-}
-
-impl<'a> PlanExplanation<'a, MirRelationExpr> {
-    /// Attach type information into the explanation.
-    pub fn explain_types(&mut self) {
-        for node in &mut self.nodes {
-            // TODO(jamii) `typ` is itself recursive, so this is quadratic :(
-            node.typ = Some(node.expr.typ());
-        }
     }
 }
 
@@ -140,6 +132,13 @@ impl<'a, ExprType: ExplainableIRNode> PlanExplanation<'a, ExprType> {
     /// the explanation.
     fn expr_chain(&self, expr: &ExprType) -> usize {
         self.expr_chains[&(expr as *const ExprType)]
+    }
+
+    /// Attach type information into the explanation.
+    pub fn explain_types(&mut self) {
+        for node in &mut self.nodes {
+            node.typ = node.expr.explain_types();
+        }
     }
 }
 
@@ -243,6 +242,10 @@ impl ExplainableIR for MirRelationExpr {
 }
 
 impl ExplainableIRNode for MirRelationExpr {
+    fn explain_types(&self) -> Option<RelationType> {
+        // TODO(jamii) `typ` is itself recursive, so this is quadratic :(
+        Some(self.typ())
+    }
     fn fmt_node(
         &self,
         view: &PlanExplanation<MirRelationExpr>,

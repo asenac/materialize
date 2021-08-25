@@ -78,6 +78,17 @@ impl Deref for OptimizedMirRelationExpr {
     }
 }
 
+impl explain::ExplainableIR for OptimizedMirRelationExpr {
+    type Node = MirRelationExpr;
+
+    fn explain_plan<'a>(
+        &'a self,
+        expr_humanizer: &'a dyn ExprHumanizer,
+    ) -> explain::PlanExplanation<'a, Self::Node> {
+        self.0.explain_plan(expr_humanizer)
+    }
+}
+
 /// A trait for humanizing components of an expression.
 pub trait ExprHumanizer: fmt::Debug {
     /// Attempts to return the a human-readable string for the relation

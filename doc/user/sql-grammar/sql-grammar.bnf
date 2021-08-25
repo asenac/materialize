@@ -267,7 +267,7 @@ drop_user ::=
     'DROP' 'USER' ('IF EXISTS')? role_name
 explain ::=
   'EXPLAIN'
-  'TYPED'? ( ( 'RAW' | 'DECORRELATED' | 'OPTIMIZED' )? 'PLAN FOR' )?
+  'TYPED'? ( ( 'RAW' | 'DECORRELATED' | 'OPTIMIZED' | 'PHYSICAL' )? 'PLAN FOR' )?
   (
     select_stmt |
     'VIEW' view_name

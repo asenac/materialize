@@ -53,6 +53,7 @@ use differential_dataflow::lattice::Lattice;
 use futures::future::{self, FutureExt, TryFutureExt};
 use futures::stream::{self, StreamExt};
 use lazy_static::lazy_static;
+use ore::result::ResultExt;
 use rand::Rng;
 use timely::communication::WorkerGuards;
 use timely::order::PartialOrder;
@@ -3161,7 +3162,6 @@ impl Coordinator {
                 }
                 explanation.to_string()
             }
-            ExplainStage::PhysicalPlan | // TODO
             ExplainStage::OptimizedPlan => {
                 self.validate_timeline(decorrelated_plan.global_uses())?;
                 let optimized_plan =
@@ -3184,6 +3184,39 @@ impl Coordinator {
                     explanation.explain_types();
                 }
                 explanation.to_string()
+            }
+            ExplainStage::PhysicalPlan => {
+                self.validate_timeline(decorrelated_plan.global_uses())?;
+                let optimized_plan =
+                    self.prep_relation_expr(decorrelated_plan, ExprPrepStyle::Explain)?;
+                let mut dataflow = DataflowDesc::new(format!("explanation"));
+                self.dataflow_builder().import_view_into_dataflow(
+                    // TODO: If explaining a view, pipe the actual id of the view.
+                    &GlobalId::Explain,
+                    &optimized_plan,
+                    &mut dataflow,
+                );
+                transform::optimize_dataflow(&mut dataflow, self.catalog.enabled_indexes());
+                let dataflow_plan = dataflow::Plan::finalize_dataflow(dataflow)
+                    .expect("Dataflow planning failed; unrecoverable error");
+
+                let mut output = String::new();
+                for obj in dataflow_plan.objects_to_build.iter() {
+                    let view_plan = match serde_json::to_string_pretty(obj).map_err_to_string() {
+                        Ok(o) => o,
+                        Err(e) => e,
+                    };
+                    output += &view_plan;
+                    output += "\n";
+                }
+                // TODO
+                if let Some(row_set_finishing) = row_set_finishing {
+                    // explanation.explain_row_set_finishing(row_set_finishing);
+                }
+                if options.typed {
+                    // explanation.explain_types();
+                }
+                output
             }
         };
         let rows = vec![Row::pack_slice(&[Datum::from(&*explanation_string)])];

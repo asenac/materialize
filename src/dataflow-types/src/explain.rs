@@ -17,12 +17,12 @@
 //!     the [`LinearOperator`] and then the `projection`.
 //!   * Intermediate views in the dataflow come next.
 //!     The format is "View <name> (<id>):" followed by the output of
-//!     [`expr::explain::ViewExplanation`].
+//!     [`expr::explain::PlanExplanation`].
 //!   * Last is the view or query being explained. The format is "Query:"
-//!     followed by the output of [`expr::explain::ViewExplanation`].
+//!     followed by the output of [`expr::explain::PlanExplanation`].
 //!   * If there are no sources with some [`LinearOperator`] and no intermediate
 //!     views, then the format is identical to the format of
-//!     [`expr::explain::ViewExplanation`].
+//!     [`expr::explain::PlanExplanation`].
 //!
 //! It's important to avoid trailing whitespace everywhere, as plans may be
 //! printed in contexts where trailing whitespace is unacceptable, like
@@ -32,7 +32,7 @@ use std::fmt;
 
 use crate::{DataflowDesc, LinearOperator};
 
-use expr::explain::{Indices, ViewExplanation};
+use expr::explain::{Indices, PlanExplanation};
 use expr::{ExprHumanizer, GlobalId, MirRelationExpr, RowSetFinishing};
 use ore::str::{bracketed, separated};
 
@@ -47,8 +47,8 @@ pub struct Explanation<'a> {
     expr_humanizer: &'a dyn ExprHumanizer,
     /// Each source that has some [`LinearOperator`].
     sources: Vec<(GlobalId, &'a LinearOperator)>,
-    /// One `ViewExplanation` per view in the dataflow.
-    views: Vec<(GlobalId, ViewExplanation<'a, MirRelationExpr>)>,
+    /// One `PlanExplanation` per view in the dataflow.
+    views: Vec<(GlobalId, PlanExplanation<'a, MirRelationExpr>)>,
     /// An optional `RowSetFinishing` to mention at the end.
     finishing: Option<RowSetFinishing>,
 }
@@ -64,7 +64,7 @@ impl<'a> Explanation<'a> {
             sources: vec![],
             views: vec![(
                 GlobalId::Explain,
-                ViewExplanation::new(expr, expr_humanizer),
+                PlanExplanation::new(expr, expr_humanizer),
             )],
             finishing: None,
         }
@@ -91,7 +91,7 @@ impl<'a> Explanation<'a> {
             .map(|build_desc| {
                 (
                     build_desc.id,
-                    ViewExplanation::new(&build_desc.view, expr_humanizer),
+                    PlanExplanation::new(&build_desc.view, expr_humanizer),
                 )
             })
             .collect::<Vec<_>>();

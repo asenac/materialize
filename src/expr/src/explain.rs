@@ -33,13 +33,13 @@ use repr::RelationType;
 
 use crate::{ExprHumanizer, Id, JoinImplementation, LocalId, MirRelationExpr};
 
-/// An `ViewExplanation` facilitates pretty-printing of a [`MirRelationExpr`].
+/// An `PlanExplanation` facilitates pretty-printing of a [`MirRelationExpr`].
 ///
 /// By default, the [`fmt::Display`] implementation renders the expression as
 /// described in the module docs. Additional information may be attached to the
 /// explanation via the other public methods on the type.
 #[derive(Debug)]
-pub struct ViewExplanation<'a, ExprType: NodeFormatter> {
+pub struct PlanExplanation<'a, ExprType: NodeFormatter> {
     expr_humanizer: &'a dyn ExprHumanizer,
     /// One `ExplanationNode` for each `MirRelationExpr` in the plan, in
     /// left-to-right post-order.
@@ -66,10 +66,10 @@ pub struct ExplanationNode<'a, ExprType> {
 }
 
 pub trait NodeFormatter: Sized {
-    fn fmt_node(&self, view: &ViewExplanation<Self>, f: &mut fmt::Formatter) -> fmt::Result;
+    fn fmt_node(&self, view: &PlanExplanation<Self>, f: &mut fmt::Formatter) -> fmt::Result;
 }
 
-impl<'a, ExprType: NodeFormatter> fmt::Display for ViewExplanation<'a, ExprType> {
+impl<'a, ExprType: NodeFormatter> fmt::Display for PlanExplanation<'a, ExprType> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut prev_chain = usize::max_value();
         for node in &self.nodes {
@@ -91,11 +91,11 @@ impl<'a, ExprType: NodeFormatter> fmt::Display for ViewExplanation<'a, ExprType>
     }
 }
 
-impl<'a> ViewExplanation<'a, MirRelationExpr> {
+impl<'a> PlanExplanation<'a, MirRelationExpr> {
     pub fn new(
         expr: &'a MirRelationExpr,
         expr_humanizer: &'a dyn ExprHumanizer,
-    ) -> ViewExplanation<'a, MirRelationExpr> {
+    ) -> PlanExplanation<'a, MirRelationExpr> {
         use MirRelationExpr::*;
 
         // Do a post-order traversal of the expression, grouping "chains" of
@@ -104,7 +104,7 @@ impl<'a> ViewExplanation<'a, MirRelationExpr> {
 
         fn walk<'a>(
             expr: &'a MirRelationExpr,
-            explanation: &mut ViewExplanation<'a, MirRelationExpr>,
+            explanation: &mut PlanExplanation<'a, MirRelationExpr>,
         ) {
             // First, walk the children, in order to perform a post-order
             // traversal.
@@ -154,7 +154,7 @@ impl<'a> ViewExplanation<'a, MirRelationExpr> {
                 .insert(expr as *const MirRelationExpr, explanation.chain);
         }
 
-        fn walk_many<'a, E>(exprs: E, explanation: &mut ViewExplanation<'a, MirRelationExpr>)
+        fn walk_many<'a, E>(exprs: E, explanation: &mut PlanExplanation<'a, MirRelationExpr>)
         where
             E: IntoIterator<Item = &'a MirRelationExpr>,
         {
@@ -175,7 +175,7 @@ impl<'a> ViewExplanation<'a, MirRelationExpr> {
             }
         }
 
-        let mut explanation = ViewExplanation {
+        let mut explanation = PlanExplanation {
             expr_humanizer,
             nodes: vec![],
             expr_chains: HashMap::new(),
@@ -196,7 +196,7 @@ impl<'a> ViewExplanation<'a, MirRelationExpr> {
     }
 }
 
-impl<'a, ExprType: NodeFormatter> ViewExplanation<'a, ExprType> {
+impl<'a, ExprType: NodeFormatter> PlanExplanation<'a, ExprType> {
     fn fmt_node(&self, f: &mut fmt::Formatter, node: &ExplanationNode<ExprType>) -> fmt::Result {
         node.expr.fmt_node(self, f)?;
 
@@ -231,7 +231,7 @@ impl<'a, ExprType: NodeFormatter> ViewExplanation<'a, ExprType> {
 impl NodeFormatter for MirRelationExpr {
     fn fmt_node(
         &self,
-        view: &ViewExplanation<MirRelationExpr>,
+        view: &PlanExplanation<MirRelationExpr>,
         f: &mut fmt::Formatter,
     ) -> fmt::Result {
         use MirRelationExpr::*;

@@ -21,7 +21,7 @@ use ore::collections::CollectionExt;
 use repr::{ColumnType, Datum, Diff, RelationType, Row};
 
 use self::func::{AggregateFunc, TableFunc};
-use crate::explain::ViewExplanation;
+use crate::explain::PlanExplanation;
 use crate::{
     DummyHumanizer, EvalError, ExprHumanizer, GlobalId, Id, LocalId, MirScalarExpr, UnaryFunc,
 };
@@ -1215,12 +1215,12 @@ impl MirRelationExpr {
     /// This method allows an additional `ExprHumanizer` which can annotate
     /// identifiers with human-meaningful names for the identifiers.
     pub fn pretty_humanized(&self, id_humanizer: &impl ExprHumanizer) -> String {
-        ViewExplanation::new(self, id_humanizer).to_string()
+        PlanExplanation::new(self, id_humanizer).to_string()
     }
 
     /// Pretty-print this MirRelationExpr to a string.
     pub fn pretty(&self) -> String {
-        ViewExplanation::new(self, &DummyHumanizer).to_string()
+        PlanExplanation::new(self, &DummyHumanizer).to_string()
     }
 
     /// Print this MirRelationExpr to a JSON-formatted string.
@@ -1230,7 +1230,7 @@ impl MirRelationExpr {
 
     /// Pretty-print this MirRelationExpr to a string with type information.
     pub fn pretty_typed(&self) -> String {
-        let mut explanation = ViewExplanation::new(self, &DummyHumanizer);
+        let mut explanation = PlanExplanation::new(self, &DummyHumanizer);
         explanation.explain_types();
         explanation.to_string()
     }

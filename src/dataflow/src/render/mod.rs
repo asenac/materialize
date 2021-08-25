@@ -1283,6 +1283,8 @@ pub mod plan {
         }
     }
 
+    use ore::str::{bracketed, separated, StrExt};
+
     impl ExplainableIRNode for Plan {
         fn explain_types(&self) -> Option<repr::RelationType> {
             None // TODO
@@ -1293,7 +1295,6 @@ pub mod plan {
             view: &PlanExplanation<Plan>,
             f: &mut std::fmt::Formatter,
         ) -> std::fmt::Result {
-            use ore::str::{bracketed, separated, StrExt};
             use Plan::*;
 
             match self {
@@ -1313,32 +1314,38 @@ pub mod plan {
                         Err(e) => writeln!(f, " Err({})", e.to_string().quoted())?,
                     }
                 }
-                Get { id, .. } => match id {
-                    Id::Local(local_id) => writeln!(
-                        f,
-                        "| Get %{} ({})",
-                        view.local_id_chains
-                            .get(local_id)
-                            .map_or_else(|| "?".to_owned(), |i| i.to_string()),
-                        local_id,
-                    )?,
-                    Id::Global(id) => writeln!(
-                        f,
-                        "| Get {} ({})",
-                        view.expr_humanizer
-                            .humanize_id(*id)
-                            .unwrap_or_else(|| "?".to_owned()),
-                        id,
-                    )?,
-                    Id::LocalBareSource => writeln!(f, "| Get Bare Source for This Source")?,
-                },
+                Get { id, mfp, .. } => {
+                    match id {
+                        Id::Local(local_id) => writeln!(
+                            f,
+                            "| Get %{} ({})",
+                            view.local_id_chains
+                                .get(local_id)
+                                .map_or_else(|| "?".to_owned(), |i| i.to_string()),
+                            local_id,
+                        )?,
+                        Id::Global(id) => writeln!(
+                            f,
+                            "| Get {} ({})",
+                            view.expr_humanizer
+                                .humanize_id(*id)
+                                .unwrap_or_else(|| "?".to_owned()),
+                            id,
+                        )?,
+                        Id::LocalBareSource => writeln!(f, "| Get Bare Source for This Source")?,
+                    }
+                    explain_mfp(mfp, f)?;
+                }
                 // Lets are annotated on the chain ID that they correspond to.
                 Let { .. } => (),
-                Mfp { .. } => {
-                    writeln!(f, "| Mfp")?;
+                Mfp { mfp, .. } => {
+                    explain_mfp(mfp, f)?;
                 }
-                FlatMap { func, exprs, .. } => {
+                FlatMap {
+                    func, exprs, mfp, ..
+                } => {
                     writeln!(f, "| FlatMap {}({})", func, separated(", ", exprs))?;
+                    explain_mfp(mfp, f)?;
                 }
                 Join {
                     inputs: join_inputs,
@@ -1387,5 +1394,22 @@ pub mod plan {
             }
             Ok(())
         }
+    }
+
+    fn explain_mfp(mfp: &MapFilterProject, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if !mfp.expressions.is_empty() {
+            writeln!(f, "| Map {}", separated(", ", mfp.expressions.iter()))?;
+        }
+        if !mfp.predicates.is_empty() {
+            writeln!(
+                f,
+                "| Filter {}",
+                separated(", ", mfp.predicates.iter().map(|(_, e)| e))
+            )?;
+        }
+        if !mfp.is_dummy_projection() {
+            writeln!(f, "| Project {}", separated(", ", mfp.projection.iter()))?;
+        }
+        Ok(())
     }
 }

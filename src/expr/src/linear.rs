@@ -67,9 +67,11 @@ impl MapFilterProject {
 
     /// True if the operator describes the identity transformation.
     pub fn is_identity(&self) -> bool {
-        self.expressions.is_empty()
-            && self.predicates.is_empty()
-            && self.projection.len() == self.input_arity
+        self.expressions.is_empty() && self.predicates.is_empty() && self.is_dummy_projection()
+    }
+
+    pub fn is_dummy_projection(&self) -> bool {
+        self.projection.len() == self.input_arity
             && self.projection.iter().enumerate().all(|(i, p)| i == *p)
     }
 

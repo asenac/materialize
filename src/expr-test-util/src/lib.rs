@@ -13,7 +13,7 @@ use lazy_static::lazy_static;
 use proc_macro2::TokenTree;
 use serde_json::Value;
 
-use expr::explain::PlanExplanation;
+use expr::explain::ExplainableIR;
 use expr::*;
 use lowertest::*;
 use ore::result::ResultExt;
@@ -135,7 +135,7 @@ impl<'a> TestCatalog {
         rel: &MirRelationExpr,
         format: Option<&Vec<String>>,
     ) -> String {
-        let mut explanation = PlanExplanation::new(rel, self);
+        let mut explanation = rel.explain_plan(self);
         if let Some(format) = format {
             if format.contains(&"types".to_string()) {
                 explanation.explain_types();

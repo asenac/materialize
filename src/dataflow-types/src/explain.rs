@@ -32,7 +32,7 @@ use std::fmt;
 
 use crate::{DataflowDesc, LinearOperator};
 
-use expr::explain::{Indices, PlanExplanation};
+use expr::explain::{ExplainableIR, Indices, PlanExplanation};
 use expr::{ExprHumanizer, GlobalId, MirRelationExpr, RowSetFinishing};
 use ore::str::{bracketed, separated};
 
@@ -62,10 +62,7 @@ impl<'a> Explanation<'a> {
         Explanation {
             expr_humanizer,
             sources: vec![],
-            views: vec![(
-                GlobalId::Explain,
-                PlanExplanation::new(expr, expr_humanizer),
-            )],
+            views: vec![(GlobalId::Explain, expr.explain_plan(expr_humanizer))],
             finishing: None,
         }
     }
@@ -88,12 +85,7 @@ impl<'a> Explanation<'a> {
         let views = dataflow
             .objects_to_build
             .iter()
-            .map(|build_desc| {
-                (
-                    build_desc.id,
-                    PlanExplanation::new(&build_desc.view, expr_humanizer),
-                )
-            })
+            .map(|build_desc| (build_desc.id, build_desc.view.explain_plan(expr_humanizer)))
             .collect::<Vec<_>>();
         Explanation {
             expr_humanizer,

@@ -39,7 +39,7 @@ use crate::{ExprHumanizer, Id, JoinImplementation, LocalId, MirRelationExpr};
 /// described in the module docs. Additional information may be attached to the
 /// explanation via the other public methods on the type.
 #[derive(Debug)]
-pub struct PlanExplanation<'a, ExprType: NodeFormatter> {
+pub struct PlanExplanation<'a, ExprType: ExplainableIR> {
     expr_humanizer: &'a dyn ExprHumanizer,
     /// One `ExplanationNode` for each `MirRelationExpr` in the plan, in
     /// left-to-right post-order.
@@ -65,11 +65,16 @@ pub struct ExplanationNode<'a, ExprType> {
     pub chain: usize,
 }
 
-pub trait NodeFormatter: Sized {
+pub trait ExplainableIR: Sized {
+    fn explain_plan<'a>(
+        &'a self,
+        expr_humanizer: &'a dyn ExprHumanizer,
+    ) -> PlanExplanation<'a, Self>;
+
     fn fmt_node(&self, view: &PlanExplanation<Self>, f: &mut fmt::Formatter) -> fmt::Result;
 }
 
-impl<'a, ExprType: NodeFormatter> fmt::Display for PlanExplanation<'a, ExprType> {
+impl<'a, ExprType: ExplainableIR> fmt::Display for PlanExplanation<'a, ExprType> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut prev_chain = usize::max_value();
         for node in &self.nodes {
@@ -92,8 +97,50 @@ impl<'a, ExprType: NodeFormatter> fmt::Display for PlanExplanation<'a, ExprType>
 }
 
 impl<'a> PlanExplanation<'a, MirRelationExpr> {
-    pub fn new(
-        expr: &'a MirRelationExpr,
+    /// Attach type information into the explanation.
+    pub fn explain_types(&mut self) {
+        for node in &mut self.nodes {
+            // TODO(jamii) `typ` is itself recursive, so this is quadratic :(
+            node.typ = Some(node.expr.typ());
+        }
+    }
+}
+
+impl<'a, ExprType: ExplainableIR> PlanExplanation<'a, ExprType> {
+    fn fmt_node(&self, f: &mut fmt::Formatter, node: &ExplanationNode<ExprType>) -> fmt::Result {
+        node.expr.fmt_node(self, f)?;
+
+        if let Some(RelationType { column_types, keys }) = &node.typ {
+            let column_types: Vec<_> = column_types
+                .iter()
+                .map(|c| self.expr_humanizer.humanize_column_type(c))
+                .collect();
+            writeln!(f, "| | types = ({})", separated(", ", column_types))?;
+            writeln!(
+                f,
+                "| | keys = ({})",
+                separated(
+                    ", ",
+                    keys.iter().map(|key| bracketed("(", ")", Indices(key)))
+                )
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Retrieves the chain ID for the specified expression.
+    ///
+    /// The `ExplanationNode` for `expr` must have already been inserted into
+    /// the explanation.
+    fn expr_chain(&self, expr: &ExprType) -> usize {
+        self.expr_chains[&(expr as *const ExprType)]
+    }
+}
+
+impl ExplainableIR for MirRelationExpr {
+    fn explain_plan<'a>(
+        &'a self,
         expr_humanizer: &'a dyn ExprHumanizer,
     ) -> PlanExplanation<'a, MirRelationExpr> {
         use MirRelationExpr::*;
@@ -183,52 +230,9 @@ impl<'a> PlanExplanation<'a, MirRelationExpr> {
             chain_local_ids: HashMap::new(),
             chain: 0,
         };
-        walk(expr, &mut explanation);
+        walk(self, &mut explanation);
         explanation
     }
-
-    /// Attach type information into the explanation.
-    pub fn explain_types(&mut self) {
-        for node in &mut self.nodes {
-            // TODO(jamii) `typ` is itself recursive, so this is quadratic :(
-            node.typ = Some(node.expr.typ());
-        }
-    }
-}
-
-impl<'a, ExprType: NodeFormatter> PlanExplanation<'a, ExprType> {
-    fn fmt_node(&self, f: &mut fmt::Formatter, node: &ExplanationNode<ExprType>) -> fmt::Result {
-        node.expr.fmt_node(self, f)?;
-
-        if let Some(RelationType { column_types, keys }) = &node.typ {
-            let column_types: Vec<_> = column_types
-                .iter()
-                .map(|c| self.expr_humanizer.humanize_column_type(c))
-                .collect();
-            writeln!(f, "| | types = ({})", separated(", ", column_types))?;
-            writeln!(
-                f,
-                "| | keys = ({})",
-                separated(
-                    ", ",
-                    keys.iter().map(|key| bracketed("(", ")", Indices(key)))
-                )
-            )?;
-        }
-
-        Ok(())
-    }
-
-    /// Retrieves the chain ID for the specified expression.
-    ///
-    /// The `ExplanationNode` for `expr` must have already been inserted into
-    /// the explanation.
-    fn expr_chain(&self, expr: &ExprType) -> usize {
-        self.expr_chains[&(expr as *const ExprType)]
-    }
-}
-
-impl NodeFormatter for MirRelationExpr {
     fn fmt_node(
         &self,
         view: &PlanExplanation<MirRelationExpr>,

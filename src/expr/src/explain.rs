@@ -65,15 +65,11 @@ pub struct ExplanationNode<'a, ExprType> {
     pub chain: usize,
 }
 
-pub trait ExplainableIR: Sized {
-    type Node;
-
+pub trait ExplainableIR<Node: ExplainableIRNode>: Sized {
     fn explain_plan<'a>(
         &'a self,
         expr_humanizer: &'a dyn ExprHumanizer,
-    ) -> PlanExplanation<'a, Self::Node>
-    where
-        <Self as ExplainableIR>::Node: ExplainableIRNode;
+    ) -> PlanExplanation<'a, Node>;
 }
 pub trait ExplainableIRNode: Sized {
     fn explain_types(&self) -> Option<RelationType>;
@@ -142,9 +138,7 @@ impl<'a, ExprType: ExplainableIRNode> PlanExplanation<'a, ExprType> {
     }
 }
 
-impl ExplainableIR for MirRelationExpr {
-    type Node = Self;
-
+impl ExplainableIR<MirRelationExpr> for MirRelationExpr {
     fn explain_plan<'a>(
         &'a self,
         expr_humanizer: &'a dyn ExprHumanizer,

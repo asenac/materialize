@@ -78,13 +78,11 @@ impl Deref for OptimizedMirRelationExpr {
     }
 }
 
-impl explain::ExplainableIR for OptimizedMirRelationExpr {
-    type Node = MirRelationExpr;
-
+impl explain::ExplainableIR<MirRelationExpr> for OptimizedMirRelationExpr {
     fn explain_plan<'a>(
         &'a self,
         expr_humanizer: &'a dyn ExprHumanizer,
-    ) -> explain::PlanExplanation<'a, Self::Node> {
+    ) -> explain::PlanExplanation<'a, MirRelationExpr> {
         self.0.explain_plan(expr_humanizer)
     }
 }

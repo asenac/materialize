@@ -30,10 +30,10 @@
 
 use std::fmt;
 
-use crate::{DataflowDesc, LinearOperator};
+use crate::{DataflowDescription, LinearOperator};
 
-use expr::explain::{ExplainableIR, Indices, PlanExplanation};
-use expr::{ExprHumanizer, GlobalId, MirRelationExpr, RowSetFinishing};
+use expr::explain::{ExplainableIR, ExplainableIRNode, Indices, PlanExplanation};
+use expr::{ExprHumanizer, GlobalId, RowSetFinishing};
 use ore::str::{bracketed, separated};
 
 /// An `Explanation` facilitates pretty-printing of the parts of a
@@ -43,22 +43,22 @@ use ore::str::{bracketed, separated};
 /// described in the module docs. Additional information may be attached to the
 /// explanation via the other public methods on the type.
 #[derive(Debug)]
-pub struct Explanation<'a> {
+pub struct Explanation<'a, ExprType: ExplainableIRNode> {
     expr_humanizer: &'a dyn ExprHumanizer,
     /// Each source that has some [`LinearOperator`].
     sources: Vec<(GlobalId, &'a LinearOperator)>,
     /// One `PlanExplanation` per view in the dataflow.
-    views: Vec<(GlobalId, PlanExplanation<'a, MirRelationExpr>)>,
+    views: Vec<(GlobalId, PlanExplanation<'a, ExprType>)>,
     /// An optional `RowSetFinishing` to mention at the end.
     finishing: Option<RowSetFinishing>,
 }
 
-impl<'a> Explanation<'a> {
-    /// Creates an explanation for a [`MirRelationExpr`].
-    pub fn new(
-        expr: &'a MirRelationExpr,
+impl<'a, ExprType: ExplainableIRNode> Explanation<'a, ExprType> {
+    /// Creates an explanation for a [`ExplainableIrNode`].
+    pub fn new<Plan: ExplainableIR<ExprType>>(
+        expr: &'a Plan,
         expr_humanizer: &'a dyn ExprHumanizer,
-    ) -> Explanation<'a> {
+    ) -> Explanation<'a, ExprType> {
         Explanation {
             expr_humanizer,
             sources: vec![],
@@ -67,10 +67,13 @@ impl<'a> Explanation<'a> {
         }
     }
 
-    pub fn new_from_dataflow(
-        dataflow: &'a DataflowDesc,
+    pub fn new_from_dataflow<Plan>(
+        dataflow: &'a DataflowDescription<Plan>,
         expr_humanizer: &'a dyn ExprHumanizer,
-    ) -> Explanation<'a> {
+    ) -> Explanation<'a, ExprType>
+    where
+        Plan: ExplainableIR<ExprType>,
+    {
         let sources = dataflow
             .source_imports
             .iter()
@@ -108,7 +111,7 @@ impl<'a> Explanation<'a> {
     }
 }
 
-impl<'a> fmt::Display for Explanation<'a> {
+impl<'a, ExprType: ExplainableIRNode> fmt::Display for Explanation<'a, ExprType> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for (id, operator) in &self.sources {
             writeln!(

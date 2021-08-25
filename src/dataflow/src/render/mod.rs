@@ -1200,7 +1200,77 @@ pub mod plan {
             expr_humanizer: &'a dyn expr::ExprHumanizer,
         ) -> expr::explain::PlanExplanation<'a, Plan> {
             use std::collections::HashMap;
-            let explanation = PlanExplanation {
+            use Plan::*;
+
+            // Do a post-order traversal of the expression, grouping "chains" of
+            // nodes together as we go. We have to break the chain whenever we
+            // encounter a node with multiple inputs, like a join.
+
+            fn walk<'a>(expr: &'a Plan, explanation: &mut PlanExplanation<'a, Plan>) {
+                // First, walk the children, in order to perform a post-order
+                // traversal.
+                match expr {
+                    // Leaf expressions. Nothing more to visit.
+                    // TODO [btv] Explain complex sources.
+                    Constant { .. } | Get { .. } => (),
+                    // Single-input expressions continue the chain.
+                    Mfp { input, .. }
+                    | FlatMap { input, .. }
+                    | Reduce { input, .. }
+                    | TopK { input, .. }
+                    | Negate { input, .. }
+                    | Threshold { input, .. }
+                    | ArrangeBy { input, .. } => walk(input, explanation),
+                    // For join and union, each input may need to go in its own
+                    // chain.
+                    Join { inputs, .. } => walk_many(inputs, explanation),
+                    Union { inputs } => walk_many(inputs, explanation),
+                    Let { id, body, value } => {
+                        // Similarly the definition of a let goes in its own chain.
+                        walk(value, explanation);
+                        explanation.chain += 1;
+
+                        // Keep track of the chain ID <-> local ID correspondence.
+                        let value_chain = explanation.expr_chain(value);
+                        explanation.local_id_chains.insert(*id, value_chain);
+                        explanation.chain_local_ids.insert(value_chain, *id);
+
+                        walk(body, explanation);
+                    }
+                }
+
+                // Then record the node.
+                explanation.nodes.push(expr::explain::ExplanationNode {
+                    expr,
+                    typ: None,
+                    chain: explanation.chain,
+                });
+                explanation
+                    .expr_chains
+                    .insert(expr as *const Plan, explanation.chain);
+            }
+
+            fn walk_many<'a, E>(exprs: E, explanation: &mut PlanExplanation<'a, Plan>)
+            where
+                E: IntoIterator<Item = &'a Plan>,
+            {
+                for expr in exprs {
+                    // Elide chains that would consist only a of single Get node.
+                    if let Plan::Get {
+                        id: Id::Local(id), ..
+                    } = expr
+                    {
+                        explanation
+                            .expr_chains
+                            .insert(expr as *const Plan, explanation.local_id_chains[id]);
+                    } else {
+                        walk(expr, explanation);
+                        explanation.chain += 1;
+                    }
+                }
+            }
+
+            let mut explanation = PlanExplanation {
                 expr_humanizer,
                 nodes: vec![],
                 expr_chains: HashMap::new(),
@@ -1208,7 +1278,7 @@ pub mod plan {
                 chain_local_ids: HashMap::new(),
                 chain: 0,
             };
-            // walk(self, &mut explanation);
+            walk(self, &mut explanation);
             explanation
         }
     }
@@ -1220,9 +1290,101 @@ pub mod plan {
 
         fn fmt_node(
             &self,
-            _view: &PlanExplanation<Plan>,
-            _f: &mut std::fmt::Formatter,
+            view: &PlanExplanation<Plan>,
+            f: &mut std::fmt::Formatter,
         ) -> std::fmt::Result {
+            use ore::str::{bracketed, separated, StrExt};
+            use Plan::*;
+
+            match self {
+                Constant { rows } => {
+                    write!(f, "| Constant")?;
+                    match rows {
+                        Ok(rows) if !rows.is_empty() => writeln!(
+                            f,
+                            " {}",
+                            separated(
+                                " ",
+                                rows.iter()
+                                    .flat_map(|(row, _, count)| (0..*count).map(move |_| row))
+                            )
+                        )?,
+                        Ok(_) => writeln!(f)?,
+                        Err(e) => writeln!(f, " Err({})", e.to_string().quoted())?,
+                    }
+                }
+                Get { id, .. } => match id {
+                    Id::Local(local_id) => writeln!(
+                        f,
+                        "| Get %{} ({})",
+                        view.local_id_chains
+                            .get(local_id)
+                            .map_or_else(|| "?".to_owned(), |i| i.to_string()),
+                        local_id,
+                    )?,
+                    Id::Global(id) => writeln!(
+                        f,
+                        "| Get {} ({})",
+                        view.expr_humanizer
+                            .humanize_id(*id)
+                            .unwrap_or_else(|| "?".to_owned()),
+                        id,
+                    )?,
+                    Id::LocalBareSource => writeln!(f, "| Get Bare Source for This Source")?,
+                },
+                // Lets are annotated on the chain ID that they correspond to.
+                Let { .. } => (),
+                Mfp { .. } => {
+                    writeln!(f, "| Mfp")?;
+                }
+                FlatMap { func, exprs, .. } => {
+                    writeln!(f, "| FlatMap {}({})", func, separated(", ", exprs))?;
+                }
+                Join {
+                    inputs: join_inputs,
+                    ..
+                } => {
+                    write!(
+                        f,
+                        "| Join {}",
+                        separated(
+                            " ",
+                            join_inputs.iter().map(|input| bracketed(
+                                "%",
+                                "",
+                                view.expr_chain(input)
+                            ))
+                        ),
+                    )?;
+                }
+                Reduce { .. } => {
+                    writeln!(f, "| Reduce")?;
+                }
+                TopK { .. } => {
+                    writeln!(f, "| TopK")?;
+                }
+                Negate { .. } => writeln!(f, "| Negate")?,
+                Threshold { .. } => writeln!(f, "| Threshold")?,
+                Union { inputs } => writeln!(
+                    f,
+                    "| Union {}",
+                    separated(
+                        " ",
+                        inputs
+                            .iter()
+                            .map(|input| bracketed("%", "", view.expr_chain(input)))
+                    )
+                )?,
+                ArrangeBy { keys, .. } => writeln!(
+                    f,
+                    "| ArrangeBy {}",
+                    separated(
+                        " ",
+                        keys.iter()
+                            .map(|key| bracketed("(", ")", separated(", ", key)))
+                    ),
+                )?,
+            }
             Ok(())
         }
     }

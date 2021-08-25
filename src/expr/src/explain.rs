@@ -126,7 +126,7 @@ impl<'a, ExprType: ExplainableIRNode> PlanExplanation<'a, ExprType> {
     ///
     /// The `ExplanationNode` for `expr` must have already been inserted into
     /// the explanation.
-    fn expr_chain(&self, expr: &ExprType) -> usize {
+    pub fn expr_chain(&self, expr: &ExprType) -> usize {
         self.expr_chains[&(expr as *const ExprType)]
     }
 

@@ -40,19 +40,19 @@ use crate::{ExprHumanizer, Id, JoinImplementation, LocalId, MirRelationExpr};
 /// explanation via the other public methods on the type.
 #[derive(Debug)]
 pub struct PlanExplanation<'a, ExprType: ExplainableIRNode> {
-    expr_humanizer: &'a dyn ExprHumanizer,
+    pub expr_humanizer: &'a dyn ExprHumanizer,
     /// One `ExplanationNode` for each `MirRelationExpr` in the plan, in
     /// left-to-right post-order.
-    nodes: Vec<ExplanationNode<'a, ExprType>>,
+    pub nodes: Vec<ExplanationNode<'a, ExprType>>,
     /// Records the chain ID that was assigned to each expression.
-    expr_chains: HashMap<*const ExprType, usize>,
+    pub expr_chains: HashMap<*const ExprType, usize>,
     /// Records the chain ID that was assigned to each let.
-    local_id_chains: HashMap<LocalId, usize>,
+    pub local_id_chains: HashMap<LocalId, usize>,
     /// Records the local ID that corresponds to a chain ID, if any.
-    chain_local_ids: HashMap<usize, LocalId>,
+    pub chain_local_ids: HashMap<usize, LocalId>,
     /// The ID of the current chain. Incremented while constructing the
     /// `Explanation`.
-    chain: usize,
+    pub chain: usize,
 }
 
 #[derive(Debug)]
@@ -240,6 +240,7 @@ impl ExplainableIRNode for MirRelationExpr {
         // TODO(jamii) `typ` is itself recursive, so this is quadratic :(
         Some(self.typ())
     }
+
     fn fmt_node(
         &self,
         view: &PlanExplanation<MirRelationExpr>,

@@ -615,6 +615,7 @@ pub mod plan {
     use crate::render::threshold::ThresholdPlan;
     use crate::render::top_k::TopKPlan;
     use dataflow_types::DataflowDescription;
+    use expr::explain::{ExplainableIR, ExplainableIRNode, PlanExplanation};
     use expr::{
         EvalError, Id, JoinInputMapper, LocalId, MapFilterProject, MirRelationExpr, MirScalarExpr,
         OptimizedMirRelationExpr, TableFunc,
@@ -1191,5 +1192,38 @@ pub mod plan {
             .project(project);
 
         *mfp = map_filter_project;
+    }
+
+    impl ExplainableIR<Plan> for Plan {
+        fn explain_plan<'a>(
+            &'a self,
+            expr_humanizer: &'a dyn expr::ExprHumanizer,
+        ) -> expr::explain::PlanExplanation<'a, Plan> {
+            use std::collections::HashMap;
+            let explanation = PlanExplanation {
+                expr_humanizer,
+                nodes: vec![],
+                expr_chains: HashMap::new(),
+                local_id_chains: HashMap::new(),
+                chain_local_ids: HashMap::new(),
+                chain: 0,
+            };
+            // walk(self, &mut explanation);
+            explanation
+        }
+    }
+
+    impl ExplainableIRNode for Plan {
+        fn explain_types(&self) -> Option<repr::RelationType> {
+            None // TODO
+        }
+
+        fn fmt_node(
+            &self,
+            _view: &PlanExplanation<Plan>,
+            _f: &mut std::fmt::Formatter,
+        ) -> std::fmt::Result {
+            Ok(())
+        }
     }
 }

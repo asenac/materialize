@@ -45,42 +45,42 @@ pub struct DeltaJoinPlan {
     ///
     /// Each path identifies its source relation, so the order is only
     /// important for determinism of dataflow construction.
-    path_plans: Vec<DeltaPathPlan>,
+    pub path_plans: Vec<DeltaPathPlan>,
 }
 
 /// A delta query path is implemented by a sequences of stages,
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeltaPathPlan {
     /// The relation whose updates seed the dataflow path.
-    source_relation: usize,
+    pub source_relation: usize,
     /// An initial closure to apply before any stages.
     ///
     /// Values of `None` indicate the identity closure.
-    initial_closure: Option<JoinClosure>,
+    pub initial_closure: Option<JoinClosure>,
     /// A *sequence* of stages to apply one after the other.
-    stage_plans: Vec<DeltaStagePlan>,
+    pub stage_plans: Vec<DeltaStagePlan>,
     /// A concluding closure to apply after the last stage.
     ///
     /// Values of `None` indicate the identity closure.
-    final_closure: Option<JoinClosure>,
+    pub final_closure: Option<JoinClosure>,
 }
 
 /// A delta query stage performs a stream lookup into an arrangement.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeltaStagePlan {
     /// The relation index into which we will look up.
-    lookup_relation: usize,
+    pub lookup_relation: usize,
     /// The key expressions to use for the streamed relation.
     ///
     /// While this starts as a stream of the source relation,
     /// it evolves through multiple lookups and ceases to be
     /// the same thing, hence the different name.
-    stream_key: Vec<MirScalarExpr>,
+    pub stream_key: Vec<MirScalarExpr>,
     /// The key expressions to use for the lookup relation.
-    lookup_key: Vec<MirScalarExpr>,
+    pub lookup_key: Vec<MirScalarExpr>,
     /// The closure to apply to the concatenation of columns
     /// of the stream and lookup relations.
-    closure: JoinClosure,
+    pub closure: JoinClosure,
 }
 
 impl DeltaJoinPlan {

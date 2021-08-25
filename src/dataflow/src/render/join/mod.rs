@@ -54,7 +54,7 @@ pub enum JoinPlan {
 /// state and the arguments it takes when invoked. It was not clear how to do
 /// this with a Rust closure (glorious battle was waged, but ultimately lost).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct JoinClosure {
+pub struct JoinClosure {
     ready_equivalences: Vec<Vec<MirScalarExpr>>,
     before: expr::SafeMfpPlan,
 }

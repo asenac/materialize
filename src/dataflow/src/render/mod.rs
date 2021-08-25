@@ -1349,7 +1349,7 @@ pub mod plan {
                 }
                 Join {
                     inputs: join_inputs,
-                    ..
+                    plan,
                 } => {
                     writeln!(
                         f,
@@ -1363,6 +1363,7 @@ pub mod plan {
                             ))
                         ),
                     )?;
+                    explain_join_plan(plan, join_inputs, view, f)?;
                 }
                 Reduce { .. } => {
                     writeln!(f, "| Reduce")?;
@@ -1409,6 +1410,38 @@ pub mod plan {
         }
         if !mfp.is_dummy_projection() {
             writeln!(f, "| Project {}", separated(", ", mfp.projection.iter()))?;
+        }
+        Ok(())
+    }
+
+    fn explain_join_plan(
+        plan: &JoinPlan,
+        join_inputs: &Vec<Plan>,
+        view: &PlanExplanation<Plan>,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match plan {
+            JoinPlan::Delta(plan) => {
+                writeln!(f, "| | DeltaQuery")?;
+                for (path_id, path) in plan.path_plans.iter().enumerate() {
+                    writeln!(f, "| | | DeltaPath {}", path_id)?;
+                    writeln!(
+                        f,
+                        "| | | | Get %{}",
+                        view.expr_chain(&join_inputs[path.source_relation])
+                    )?;
+                    for stage in path.stage_plans.iter() {
+                        writeln!(
+                            f,
+                            "| | | | Lookup %{} ({}) = ({})",
+                            view.expr_chain(&join_inputs[stage.lookup_relation]),
+                            separated(", ", stage.stream_key.iter()),
+                            separated(", ", stage.lookup_key.iter()),
+                        )?;
+                    }
+                }
+            }
+            JoinPlan::Linear(_) => {}
         }
         Ok(())
     }

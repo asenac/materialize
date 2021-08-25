@@ -1344,7 +1344,7 @@ pub mod plan {
                     inputs: join_inputs,
                     ..
                 } => {
-                    write!(
+                    writeln!(
                         f,
                         "| Join {}",
                         separated(

@@ -84,7 +84,29 @@ impl FoldConstants {
                     };
                 }
             }
-            MirRelationExpr::TopK { .. } => { /*too complicated*/ }
+            MirRelationExpr::TopK {
+                input,
+                group_key,
+                order_key,
+                limit,
+                offset,
+                monotonic: _,
+            } => {
+                if group_key.is_empty() && order_key.is_empty() {
+                    if let MirRelationExpr::Constant { rows, .. } = &mut **input {
+                        if let Some(limit) = limit {
+                            if let Ok(rows) = rows {
+                                *rows = rows.drain(..).skip(*offset).take(*limit).collect();
+                                *relation = input.take_dangerous();
+                            }
+                        } else if *offset == 0 {
+                            *relation = input.take_dangerous();
+                        }
+                    } else if limit.is_none() && *offset == 0 {
+                        *relation = input.take_dangerous();
+                    }
+                }
+            }
             MirRelationExpr::Negate { input } => {
                 if let MirRelationExpr::Constant { rows, .. } = &mut **input {
                     if let Ok(rows) = rows {

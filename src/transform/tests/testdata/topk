@@ -14,19 +14,28 @@ opt
 (top_k (constant [[1][2][3]] [int32]) [] [] 1 0)
 ----
 %0 =
-| Constant (1) (2) (3)
-| TopK group=() order=() limit=1 offset=0
+| Constant (1)
 
 opt
 (top_k (constant [[3][2][1]] [int32]) [] [] 10 1)
 ----
 %0 =
-| Constant (1) (2) (3)
-| TopK group=() order=() limit=10 offset=1
+| Constant (2) (3)
 
 opt
 (top_k (constant [[1][4][3]] [int32]) [] [] 10 0)
 ----
 %0 =
 | Constant (1) (3) (4)
-| TopK group=() order=() limit=10 offset=0
+
+opt
+(top_k (constant [[1][4][3]] [int32]) [] [] 2 0)
+----
+%0 =
+| Constant (1) (3)
+
+opt
+(top_k (constant [[1][4][3]] [int32]) [] [] null 0)
+----
+%0 =
+| Constant (1) (3) (4)

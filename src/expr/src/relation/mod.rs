@@ -237,13 +237,11 @@ pub enum MirRelationExpr {
 }
 
 impl MirRelationExpr {
-    /// Reports the schema of the relation.
+    /// Reports the schema of the relation given the schema of the input relations.
     ///
-    /// This method determines the type through recursive traversal of the
-    /// relation expression, drawing from the types of base collections.
-    /// As such, this is not an especially cheap method, and should be used
-    /// judiciously.
-    pub fn typ(&self) -> RelationType {
+    /// It can be used during a post-order traversal.
+    pub fn typ_with_input_types(&self, input_types: &[RelationType]) -> RelationType {
+        assert_eq!(self.num_inputs(), input_types.len());
         match self {
             MirRelationExpr::Constant { rows, typ } => {
                 if let Ok(rows) = rows {
@@ -289,16 +287,16 @@ impl MirRelationExpr {
                 }
             }
             MirRelationExpr::Get { typ, .. } => typ.clone(),
-            MirRelationExpr::Let { body, .. } => body.typ(),
-            MirRelationExpr::Project { input, outputs } => {
-                let input_typ = input.typ();
+            MirRelationExpr::Let { .. } => input_types.last().unwrap().clone(),
+            MirRelationExpr::Project { input: _, outputs } => {
+                let input_typ = input_types.first().unwrap();
                 let mut output_typ = RelationType::new(
                     outputs
                         .iter()
                         .map(|&i| input_typ.column_types[i].clone())
                         .collect(),
                 );
-                for keys in input_typ.keys {
+                for keys in input_typ.keys.iter() {
                     if keys.iter().all(|k| outputs.contains(k)) {
                         output_typ = output_typ.with_key(
                             keys.iter()
@@ -309,8 +307,8 @@ impl MirRelationExpr {
                 }
                 output_typ
             }
-            MirRelationExpr::Map { input, scalars } => {
-                let mut typ = input.typ();
+            MirRelationExpr::Map { input: _, scalars } => {
+                let mut typ = input_types.first().unwrap().clone();
                 let arity = typ.column_types.len();
 
                 let mut remappings = Vec::new();
@@ -362,12 +360,12 @@ impl MirRelationExpr {
                 typ
             }
             MirRelationExpr::FlatMap {
-                input,
+                input: _,
                 func,
                 exprs: _,
                 demand: _,
             } => {
-                let mut input_typ = input.typ();
+                let mut input_typ = input_types.first().unwrap().clone();
                 input_typ
                     .column_types
                     .extend(func.output_type().column_types);
@@ -375,11 +373,14 @@ impl MirRelationExpr {
                 let typ = RelationType::new(input_typ.column_types);
                 typ
             }
-            MirRelationExpr::Filter { input, predicates } => {
+            MirRelationExpr::Filter {
+                input: _,
+                predicates,
+            } => {
                 // A filter inherits the keys of its input unless the filters
                 // have reduced the input to a single row, in which case the
                 // keys of the input are `()`.
-                let mut input_typ = input.typ();
+                let mut input_typ = input_types.first().unwrap().clone();
                 let cols_equal_to_literal = predicates
                     .iter()
                     .filter_map(|p| {
@@ -434,12 +435,10 @@ impl MirRelationExpr {
                 input_typ
             }
             MirRelationExpr::Join {
-                inputs,
+                inputs: _,
                 equivalences,
                 ..
             } => {
-                let input_types = inputs.iter().map(|i| i.typ()).collect::<Vec<_>>();
-
                 // Iterating and cloning types inside the flat_map() avoids allocating Vec<>,
                 // as clones are directly added to column_types Vec<>.
                 let column_types = input_types
@@ -452,7 +451,7 @@ impl MirRelationExpr {
                 // used. Otherwise, Materialize may potentially end up in an
                 // infinite loop.
                 let input_mapper =
-                    join_input_mapper::JoinInputMapper::new_from_input_types(&input_types);
+                    join_input_mapper::JoinInputMapper::new_from_input_types(input_types);
 
                 let global_keys = input_mapper.global_keys(
                     &input_types
@@ -468,18 +467,18 @@ impl MirRelationExpr {
                 typ
             }
             MirRelationExpr::Reduce {
-                input,
+                input: _,
                 group_key,
                 aggregates,
                 ..
             } => {
-                let input_typ = input.typ();
+                let input_typ = input_types.first().unwrap();
                 let mut column_types = group_key
                     .iter()
-                    .map(|e| e.typ(&input_typ))
+                    .map(|e| e.typ(input_typ))
                     .collect::<Vec<_>>();
                 for agg in aggregates {
-                    column_types.push(agg.typ(&input_typ));
+                    column_types.push(agg.typ(input_typ));
                 }
                 let mut result = RelationType::new(column_types);
                 // The group key should form a key, but we might already have
@@ -512,32 +511,34 @@ impl MirRelationExpr {
                 result
             }
             MirRelationExpr::TopK {
-                input,
+                input: _,
                 group_key,
                 limit,
                 ..
             } => {
                 // If `limit` is `Some(1)` then the group key will become
                 // a unique key, as there will be only one record with that key.
-                let mut typ = input.typ();
+                let mut typ = input_types.first().unwrap().clone();
                 if limit == &Some(1) {
                     typ = typ.with_key(group_key.clone())
                 }
                 typ
             }
-            MirRelationExpr::Negate { input } => {
+            MirRelationExpr::Negate { input: _ } => {
                 // Although negate may have distinct records for each key,
                 // the multiplicity is -1 rather than 1. This breaks many
                 // of the optimization uses of "keys".
-                let mut typ = input.typ();
+                let mut typ = input_types.first().unwrap().clone();
                 typ.keys.clear();
                 typ
             }
-            MirRelationExpr::Threshold { input } => input.typ(),
+            MirRelationExpr::Threshold { input: _ } => input_types.first().unwrap().clone(),
             MirRelationExpr::Union { base, inputs } => {
-                let mut base_cols = base.typ().column_types;
-                for input in inputs {
-                    for (base_col, col) in base_cols.iter_mut().zip_eq(input.typ().column_types) {
+                let mut base_cols = input_types.first().unwrap().column_types.clone();
+                for input_type in input_types.iter().skip(1) {
+                    for (base_col, col) in
+                        base_cols.iter_mut().zip_eq(input_type.column_types.iter())
+                    {
                         *base_col = base_col
                             .union(&col)
                             .map_err(|e| format!("{}\nIn {:#?}", e, self))
@@ -618,9 +619,46 @@ impl MirRelationExpr {
                 RelationType::new(base_cols).with_keys(keys)
                 // Important: do not inherit keys of either input, as not unique.
             }
-            MirRelationExpr::ArrangeBy { input, .. } => input.typ(),
-            MirRelationExpr::DeclareKeys { input, keys } => input.typ().with_keys(keys.clone()),
+            MirRelationExpr::ArrangeBy { input: _, .. } => input_types.first().unwrap().clone(),
+            MirRelationExpr::DeclareKeys { input: _, keys } => {
+                input_types.first().unwrap().clone().with_keys(keys.clone())
+            }
         }
+    }
+
+    /// Reports the schema of the relation.
+    ///
+    /// This method determines the type through recursive traversal of the
+    /// relation expression, drawing from the types of base collections.
+    /// As such, this is not an especially cheap method, and should be used
+    /// judiciously.
+    pub fn typ(&self) -> RelationType {
+        let mut type_stack = Vec::new();
+        self.visit_pre_post(
+            &mut |e: &MirRelationExpr| -> Option<Vec<&MirRelationExpr>> {
+                if let MirRelationExpr::Let { body, .. } = &e {
+                    // do not traverse the value sub-graph
+                    Some(vec![&*body])
+                } else {
+                    None
+                }
+            },
+            &mut |e: &MirRelationExpr| {
+                if let MirRelationExpr::Let { .. } = &e {
+                    let body_typ = type_stack.pop().unwrap();
+                    // insert a dummy relation type
+                    type_stack.push(RelationType::empty());
+                    type_stack.push(body_typ);
+                }
+                let num_inputs = e.num_inputs();
+                let relation_type =
+                    e.typ_with_input_types(&type_stack[type_stack.len() - num_inputs..]);
+                type_stack.truncate(type_stack.len() - num_inputs);
+                type_stack.push(relation_type);
+            },
+        );
+        assert_eq!(type_stack.len(), 1);
+        type_stack.pop().unwrap()
     }
 
     /// The number of columns in the relation.
@@ -651,6 +689,27 @@ impl MirRelationExpr {
             MirRelationExpr::Union { base, inputs: _ } => base.arity(),
             MirRelationExpr::ArrangeBy { input, .. } => input.arity(),
             MirRelationExpr::DeclareKeys { input, .. } => input.arity(),
+        }
+    }
+
+    /// The number of child relations this relation has.
+    pub fn num_inputs(&self) -> usize {
+        match self {
+            MirRelationExpr::Constant { .. } => 0,
+            MirRelationExpr::Get { .. } => 0,
+            MirRelationExpr::Let { .. } => 2,
+            MirRelationExpr::Project { .. }
+            | MirRelationExpr::Map { .. }
+            | MirRelationExpr::FlatMap { .. }
+            | MirRelationExpr::Filter { .. }
+            | MirRelationExpr::Reduce { .. }
+            | MirRelationExpr::TopK { .. }
+            | MirRelationExpr::Negate { .. }
+            | MirRelationExpr::Threshold { .. }
+            | MirRelationExpr::ArrangeBy { .. }
+            | MirRelationExpr::DeclareKeys { .. } => 1,
+            MirRelationExpr::Union { base: _, inputs } => 1 + inputs.len(),
+            MirRelationExpr::Join { inputs, .. } => inputs.len(),
         }
     }
 
@@ -1127,6 +1186,27 @@ impl MirRelationExpr {
     {
         f(self);
         self.visit1_mut(|e| e.visit_mut_pre(f))
+    }
+
+    /// A generalization of `visit`. The function `pre` runs on a
+    /// `MirRelationExpr` before it runs on any of the child `MirRelationExpr`s.
+    /// The function `post` runs on child `MirRelationExpr`s first before the
+    /// parent. Optionally, `pre` can return which child `MirRelationExpr`s, if
+    /// any, should be visited (default is to visit all children).
+    pub fn visit_pre_post<F1, F2>(&self, pre: &mut F1, post: &mut F2)
+    where
+        F1: FnMut(&Self) -> Option<Vec<&MirRelationExpr>>,
+        F2: FnMut(&Self),
+    {
+        let to_visit = pre(self);
+        if let Some(to_visit) = to_visit {
+            for e in to_visit {
+                e.visit_pre_post(pre, post);
+            }
+        } else {
+            self.visit1(|e| e.visit_pre_post(pre, post));
+        }
+        post(self);
     }
 
     /// Fallible visitor for the [`MirScalarExpr`]s in the relation expression.

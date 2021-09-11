@@ -1944,7 +1944,8 @@ fn reduction_type(func: &AggregateFunc) -> ReductionType {
         | AggregateFunc::JsonbObjectAgg { .. }
         | AggregateFunc::ArrayConcat { .. }
         | AggregateFunc::ListConcat { .. }
-        | AggregateFunc::StringAgg { .. } => ReductionType::Basic,
+        | AggregateFunc::StringAgg { .. }
+        | AggregateFunc::RowNumber { .. } => ReductionType::Basic,
     }
 }
 
@@ -2063,7 +2064,8 @@ pub mod monoids {
             | AggregateFunc::JsonbObjectAgg { .. }
             | AggregateFunc::ArrayConcat { .. }
             | AggregateFunc::ListConcat { .. }
-            | AggregateFunc::StringAgg { .. } => None,
+            | AggregateFunc::StringAgg { .. }
+            | AggregateFunc::RowNumber { .. } => None,
         }
     }
 }

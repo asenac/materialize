@@ -83,3 +83,18 @@ build apply=PredicatePushdown
 | Filter (#0 = #2), (#2 = 1)
 ----
 ----
+
+build apply=OuterJoinLowering
+(outer_join (get x) (get y) [(call_binary eq #0 #2)])
+----
+----
+%0 =
+| Get x (u0)
+
+%1 =
+| Get y (u1)
+
+%2 =
+| OuterJoin %0 %1 (#0 = #2)
+----
+----

@@ -39,6 +39,7 @@ pub mod join_implementation;
 pub mod map_lifting;
 pub mod nonnull_requirements;
 pub mod nonnullable;
+pub mod physical_lowering;
 pub mod predicate_pushdown;
 pub mod projection_extraction;
 pub mod projection_lifting;

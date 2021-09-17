@@ -1,0 +1,50 @@
+cat
+(defsource x [int64 int64])
+(defsource y [int64 int64])
+----
+ok
+
+build
+(outer_join (get x) (get y) [])
+----
+----
+%0 =
+| Get x (u0)
+
+%1 =
+| Get y (u1)
+
+%2 =
+| OuterJoin %0 %1
+----
+----
+
+build
+(full_outer_join (get x) (get y) [])
+----
+----
+%0 =
+| Get x (u0)
+
+%1 =
+| Get y (u1)
+
+%2 =
+| FulllOuterJoin %0 %1
+----
+----
+
+build
+(outer_join (get x) (get y) [(call_binary eq #0 #2)])
+----
+----
+%0 =
+| Get x (u0)
+
+%1 =
+| Get y (u1)
+
+%2 =
+| OuterJoin %0 %1 (#0 = #2)
+----
+----

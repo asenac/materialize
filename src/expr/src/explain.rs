@@ -366,15 +366,27 @@ impl<'a> ViewExplanation<'a> {
                 ),
             )?,
             MirRelationExpr::OuterJoin {
-                preserving: _,
-                non_preserving: _,
-                ..
-            } => writeln!(f, "| OuterJoin")?,
+                preserving,
+                non_preserving,
+                predicates,
+            } => writeln!(
+                f,
+                "| OuterJoin %{} %{} {}",
+                self.expr_chain(preserving),
+                self.expr_chain(non_preserving),
+                separated(", ", predicates)
+            )?,
             MirRelationExpr::FullOuterJoin {
-                input1: _,
-                input2: _,
-                ..
-            } => writeln!(f, "| FulllOuterJoin")?,
+                input1,
+                input2,
+                predicates,
+            } => writeln!(
+                f,
+                "| FulllOuterJoin %{} %{} {}",
+                self.expr_chain(input1),
+                self.expr_chain(input2),
+                separated(", ", predicates)
+            )?,
         }
 
         if let Some(RelationType { column_types, keys }) = &node.typ {

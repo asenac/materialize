@@ -360,6 +360,8 @@ impl FoldConstants {
                     *relation = input.take_dangerous();
                 }
             }
+            // @todo asenac
+            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => {}
         }
 
         // This transformation maintains the invariant that all constant nodes

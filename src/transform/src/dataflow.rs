@@ -365,6 +365,9 @@ pub mod monotonic {
                 });
                 false
             }
+
+            // @todo asenac
+            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => false,
         }
     }
 

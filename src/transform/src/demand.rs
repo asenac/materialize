@@ -265,6 +265,8 @@ impl Demand {
                 }
                 self.action(input, columns, gets);
             }
+            // @todo asenac
+            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => {}
         }
     }
 }

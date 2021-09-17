@@ -670,6 +670,8 @@ impl LiteralLifting {
                 }
                 literals
             }
+            // @todo asenac
+            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => Vec::new(),
         }
     }
 }

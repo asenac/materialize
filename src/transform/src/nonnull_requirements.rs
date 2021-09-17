@@ -281,6 +281,9 @@ impl NonNullRequirements {
             MirRelationExpr::ArrangeBy { input, .. } => {
                 self.action(input, columns, gets);
             }
+
+            // @todo asenac
+            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => {}
         }
     }
 }

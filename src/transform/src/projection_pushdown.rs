@@ -356,6 +356,9 @@ impl ProjectionPushdown {
                 }
                 desired_projection.clone()
             }
+
+            // @todo asenac
+            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => Vec::new(),
         };
         let add_project = desired_projection != actual_projection;
         if add_project {

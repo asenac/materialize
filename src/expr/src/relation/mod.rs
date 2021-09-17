@@ -234,6 +234,20 @@ pub enum MirRelationExpr {
         /// The set of columns in the source collection that form a key.
         keys: Vec<Vec<usize>>,
     },
+
+    //
+    // Logical operators
+    //
+    OuterJoin {
+        preserving: Box<MirRelationExpr>,
+        non_preserving: Box<MirRelationExpr>,
+        predicates: Vec<MirScalarExpr>,
+    },
+    FullOuterJoin {
+        input1: Box<MirRelationExpr>,
+        input2: Box<MirRelationExpr>,
+        predicates: Vec<MirScalarExpr>,
+    },
 }
 
 impl MirRelationExpr {
@@ -620,6 +634,24 @@ impl MirRelationExpr {
             }
             MirRelationExpr::ArrangeBy { input, .. } => input.typ(),
             MirRelationExpr::DeclareKeys { input, keys } => input.typ().with_keys(keys.clone()),
+
+            MirRelationExpr::OuterJoin {
+                preserving,
+                non_preserving,
+                ..
+            } => {
+                let preserving_type = preserving.typ();
+                let non_preserving_type = non_preserving.typ();
+                let mut column_types = preserving_type.column_types;
+                column_types.extend(non_preserving_type.column_types);
+                RelationType::new(column_types)
+            }
+
+            MirRelationExpr::FullOuterJoin { input1, input2, .. } => {
+                let mut column_types = input1.typ().column_types;
+                column_types.extend(input2.typ().column_types);
+                RelationType::new(column_types)
+            }
         }
     }
 
@@ -651,6 +683,14 @@ impl MirRelationExpr {
             MirRelationExpr::Union { base, inputs: _ } => base.arity(),
             MirRelationExpr::ArrangeBy { input, .. } => input.arity(),
             MirRelationExpr::DeclareKeys { input, .. } => input.arity(),
+            MirRelationExpr::OuterJoin {
+                preserving,
+                non_preserving,
+                ..
+            } => preserving.arity() + non_preserving.arity(),
+            MirRelationExpr::FullOuterJoin { input1, input2, .. } => {
+                input1.arity() + input2.arity()
+            }
         }
     }
 
@@ -995,6 +1035,18 @@ impl MirRelationExpr {
             MirRelationExpr::DeclareKeys { input, .. } => {
                 f(input)?;
             }
+            MirRelationExpr::OuterJoin {
+                preserving,
+                non_preserving,
+                ..
+            } => {
+                f(preserving)?;
+                f(non_preserving)?;
+            }
+            MirRelationExpr::FullOuterJoin { input1, input2, .. } => {
+                f(input1)?;
+                f(input2)?;
+            }
         }
         Ok(())
     }
@@ -1077,6 +1129,18 @@ impl MirRelationExpr {
             MirRelationExpr::DeclareKeys { input, .. } => {
                 f(input)?;
             }
+            MirRelationExpr::OuterJoin {
+                preserving,
+                non_preserving,
+                ..
+            } => {
+                f(preserving)?;
+                f(non_preserving)?;
+            }
+            MirRelationExpr::FullOuterJoin { input1, input2, .. } => {
+                f(input1)?;
+                f(input2)?;
+            }
         }
         Ok(())
     }
@@ -1152,6 +1216,14 @@ impl MirRelationExpr {
             | MirRelationExpr::Filter {
                 predicates: scalars,
                 input: _,
+            }
+            | MirRelationExpr::OuterJoin {
+                predicates: scalars,
+                ..
+            }
+            | MirRelationExpr::FullOuterJoin {
+                predicates: scalars,
+                ..
             } => {
                 for s in scalars {
                     f(s)?;

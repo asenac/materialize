@@ -325,6 +325,9 @@ impl RedundantJoin {
             }
 
             MirRelationExpr::ArrangeBy { input, .. } => self.action(input, lets),
+
+            // @todo asenac
+            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => Vec::new(),
         }
     }
 }

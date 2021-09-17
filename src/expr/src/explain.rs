@@ -134,6 +134,18 @@ impl<'a> ViewExplanation<'a> {
 
                     walk(body, explanation);
                 }
+                MirRelationExpr::OuterJoin {
+                    preserving,
+                    non_preserving,
+                    ..
+                } => {
+                    let inputs = [&**preserving, &**non_preserving];
+                    walk_many(inputs, explanation);
+                }
+                MirRelationExpr::FullOuterJoin { input1, input2, .. } => {
+                    let inputs = [&**input1, &**input2];
+                    walk_many(inputs, explanation);
+                }
             }
 
             // Then record the node.
@@ -353,6 +365,16 @@ impl<'a> ViewExplanation<'a> {
                         .map(|key| bracketed("(", ")", separated(", ", key)))
                 ),
             )?,
+            MirRelationExpr::OuterJoin {
+                preserving: _,
+                non_preserving: _,
+                ..
+            } => writeln!(f, "| OuterJoin")?,
+            MirRelationExpr::FullOuterJoin {
+                input1: _,
+                input2: _,
+                ..
+            } => writeln!(f, "| FulllOuterJoin")?,
         }
 
         if let Some(RelationType { column_types, keys }) = &node.typ {

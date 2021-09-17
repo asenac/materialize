@@ -845,6 +845,10 @@ pub mod plan {
                 MirRelationExpr::Project { .. } => {
                     panic!("This operator should have been extracted");
                 }
+                MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => {
+                    panic!("This operator should have been lowered as a physical dataflow");
+                }
+
                 // These operators may not have been extracted, and need to result in a `Plan`.
                 MirRelationExpr::Constant { rows, typ: _ } => {
                     use timely::progress::Timestamp;

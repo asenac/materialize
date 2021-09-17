@@ -284,6 +284,8 @@ impl ColumnKnowledge {
                 }
                 know
             }
+            // @todo asenac
+            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => Vec::new(),
         })
     }
 }

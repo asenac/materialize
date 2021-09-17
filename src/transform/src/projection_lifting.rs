@@ -326,6 +326,8 @@ impl ProjectionLifting {
                         .project(outputs.clone());
                 }
             }
+            // @todo asenac
+            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => {}
         }
     }
 }

@@ -991,6 +991,10 @@ fn attempt_outer_join(
         return None;
     }
 
+    if let JoinKind::LeftOuter { .. } = kind {
+        return Some(left.outer_join(right, vec![on]));
+    }
+
     // If we've gotten this far, we can do the clever thing.
     // We'll want to use left and right multiple times
     let result = left.let_in(id_gen, |id_gen, get_left| {

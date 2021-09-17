@@ -1389,6 +1389,18 @@ impl MirRelationExpr {
         }
     }
 
+    pub fn outer_join(
+        self,
+        non_preserving: MirRelationExpr,
+        predicates: Vec<MirScalarExpr>,
+    ) -> MirRelationExpr {
+        MirRelationExpr::OuterJoin {
+            preserving: Box::new(self),
+            non_preserving: Box::new(non_preserving),
+            predicates,
+        }
+    }
+
     /// Return every row in `self` that does not have a matching row in the first columns of `keys_and_values`, using `default` to fill in the remaining columns
     /// (If `default` is a row of nulls, this is the 'outer' part of LEFT OUTER JOIN)
     pub fn anti_lookup(

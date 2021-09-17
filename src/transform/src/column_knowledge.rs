@@ -284,8 +284,14 @@ impl ColumnKnowledge {
                 }
                 know
             }
-            // @todo asenac
-            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => Vec::new(),
+            // @todo(asenac)
+            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => (0..expr
+                .arity())
+                .map(|_| DatumKnowledge {
+                    value: None,
+                    nullable: true,
+                })
+                .collect_vec(),
         })
     }
 }

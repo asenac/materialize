@@ -371,7 +371,7 @@ impl<'a> ViewExplanation<'a> {
                 predicates,
             } => writeln!(
                 f,
-                "| OuterJoin %{} %{} {}",
+                "| LeftOuterJoin %{} %{} {}",
                 self.expr_chain(preserving),
                 self.expr_chain(non_preserving),
                 separated(", ", predicates)

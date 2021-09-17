@@ -15,7 +15,7 @@ build
 | Get y (u1)
 
 %2 =
-| OuterJoin %0 %1
+| LeftOuterJoin %0 %1
 ----
 ----
 
@@ -45,7 +45,7 @@ build
 | Get y (u1)
 
 %2 =
-| OuterJoin %0 %1 (#0 = #2)
+| LeftOuterJoin %0 %1 (#0 = #2)
 ----
 ----
 
@@ -121,7 +121,7 @@ build
 | Get y (u1)
 
 %2 =
-| OuterJoin %0 %1 (#0 = #2)
+| LeftOuterJoin %0 %1 (#0 = #2)
 | Filter (#1 = 1)
 ----
 ----
@@ -138,7 +138,7 @@ build apply=(PredicatePushdown)
 | Get y (u1)
 
 %2 =
-| OuterJoin %0 %1 (#0 = #2)
+| LeftOuterJoin %0 %1 (#0 = #2)
 | Filter
 ----
 ----

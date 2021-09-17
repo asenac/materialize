@@ -404,10 +404,13 @@ impl PredicatePushdown {
                         preserving,
                         non_preserving,
                         predicates: oj_predicates,
+                        product,
                     } => {
                         let mut retain = Vec::new();
                         let mut push_down = Vec::new();
                         let preserving_arity = preserving.arity();
+                        let non_preserving_arity = non_preserving.arity();
+                        let total_arity = preserving_arity + non_preserving_arity;
                         let mut to_inner_join = false;
                         for p in predicates.drain(..) {
                             if p.support().iter().any(|c| *c >= preserving_arity) {
@@ -424,6 +427,9 @@ impl PredicatePushdown {
                         }
 
                         if !push_down.is_empty() {
+                            if let Some(product) = product {
+                                **product = product.take_dangerous().filter(push_down.clone());
+                            }
                             **preserving = preserving.take_dangerous().filter(push_down);
                         }
 
@@ -435,10 +441,17 @@ impl PredicatePushdown {
                         self.action(non_preserving, get_predicates);
 
                         if to_inner_join {
-                            *relation = preserving
-                                .take_dangerous()
-                                .product(non_preserving.take_dangerous())
-                                .filter(oj_predicates.drain(..).chain(retain.drain(..)));
+                            if let Some(product) = product {
+                                *relation = product
+                                    .take_dangerous()
+                                    .filter(oj_predicates.drain(..).chain(retain.drain(..)))
+                                    .project((0..total_arity).collect());
+                            } else {
+                                *relation = preserving
+                                    .take_dangerous()
+                                    .product(non_preserving.take_dangerous())
+                                    .filter(oj_predicates.drain(..).chain(retain.drain(..)));
+                            }
                         } else {
                             let _ = std::mem::replace(predicates, retain);
                         }

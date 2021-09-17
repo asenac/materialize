@@ -369,12 +369,21 @@ impl<'a> ViewExplanation<'a> {
                 preserving,
                 non_preserving,
                 predicates,
+                product,
             } => writeln!(
                 f,
-                "| LeftOuterJoin %{} %{} {}",
+                "| LeftOuterJoin %{} %{} {} {}",
                 self.expr_chain(preserving),
                 self.expr_chain(non_preserving),
-                separated(", ", predicates)
+                separated(", ", predicates),
+                product
+                    .iter()
+                    .map(|product| format!(
+                        "(product with subqueries %{})",
+                        self.expr_chain(product)
+                    ))
+                    .next()
+                    .unwrap_or_else(String::new),
             )?,
             MirRelationExpr::FullOuterJoin {
                 input1,

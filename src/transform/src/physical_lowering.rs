@@ -32,6 +32,7 @@ impl OuterJoinLowering {
                 preserving,
                 non_preserving,
                 predicates,
+                product: _, // @todo
             } => {
                 if let Some((l_keys, r_keys)) =
                     Self::is_equi_join(preserving, non_preserving, predicates)

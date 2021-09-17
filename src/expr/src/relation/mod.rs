@@ -242,6 +242,13 @@ pub enum MirRelationExpr {
         preserving: Box<MirRelationExpr>,
         non_preserving: Box<MirRelationExpr>,
         predicates: Vec<MirScalarExpr>,
+        /// The product of both sides of the outer join. Only set when there are subqueries
+        /// in the ON clause. Any predicate pushed down to the preserving side, must be pushed
+        /// down to this relation too.
+        /// The outer-to-inner join conversion is the result of applying the filters in
+        /// `predicates` to this relation and the projection of the first
+        /// `preserving.arity() + non_preserving.arity()` columns.
+        product: Option<Box<MirRelationExpr>>,
     },
     FullOuterJoin {
         input1: Box<MirRelationExpr>,
@@ -1038,10 +1045,14 @@ impl MirRelationExpr {
             MirRelationExpr::OuterJoin {
                 preserving,
                 non_preserving,
+                product,
                 ..
             } => {
                 f(preserving)?;
                 f(non_preserving)?;
+                if let Some(product) = product {
+                    f(product)?;
+                }
             }
             MirRelationExpr::FullOuterJoin { input1, input2, .. } => {
                 f(input1)?;
@@ -1132,10 +1143,14 @@ impl MirRelationExpr {
             MirRelationExpr::OuterJoin {
                 preserving,
                 non_preserving,
+                product,
                 ..
             } => {
                 f(preserving)?;
                 f(non_preserving)?;
+                if let Some(product) = product {
+                    f(product)?;
+                }
             }
             MirRelationExpr::FullOuterJoin { input1, input2, .. } => {
                 f(input1)?;
@@ -1398,6 +1413,7 @@ impl MirRelationExpr {
             preserving: Box::new(self),
             non_preserving: Box::new(non_preserving),
             predicates,
+            product: None,
         }
     }
 

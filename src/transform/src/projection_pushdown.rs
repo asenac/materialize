@@ -362,6 +362,7 @@ impl ProjectionPushdown {
                 preserving,
                 non_preserving,
                 predicates,
+                ..
             } => {
                 let preserving_arity = preserving.arity();
                 if !desired_projection.iter().any(|c| *c >= preserving_arity) {

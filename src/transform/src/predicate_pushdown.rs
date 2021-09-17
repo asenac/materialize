@@ -399,6 +399,50 @@ impl PredicatePushdown {
                         *relation = inner.take_dangerous().filter(predicates).negate();
                         self.action(relation, get_predicates);
                     }
+
+                    MirRelationExpr::OuterJoin {
+                        preserving,
+                        non_preserving,
+                        predicates: oj_predicates,
+                    } => {
+                        let mut retain = Vec::new();
+                        let mut push_down = Vec::new();
+                        let preserving_arity = preserving.arity();
+                        let mut to_inner_join = false;
+                        for p in predicates.drain(..) {
+                            if p.support().iter().any(|c| *c >= preserving_arity) {
+                                if !to_inner_join {
+                                    let mut non_null_columns = HashSet::new();
+                                    p.non_null_requirements(&mut non_null_columns);
+                                    to_inner_join =
+                                        non_null_columns.iter().any(|c| *c >= preserving_arity);
+                                }
+                                retain.push(p);
+                            } else {
+                                push_down.push(p);
+                            }
+                        }
+
+                        if !push_down.is_empty() {
+                            **preserving = preserving.take_dangerous().filter(push_down);
+                        }
+
+                        if to_inner_join {
+                            // @todo re-evaluate predicates in retain
+                        }
+
+                        self.action(preserving, get_predicates);
+                        self.action(non_preserving, get_predicates);
+
+                        if to_inner_join {
+                            *relation = preserving
+                                .take_dangerous()
+                                .product(non_preserving.take_dangerous())
+                                .filter(oj_predicates.drain(..).chain(retain.drain(..)));
+                        } else {
+                            let _ = std::mem::replace(predicates, retain);
+                        }
+                    }
                     x => {
                         x.visit1_mut(|e| self.action(e, get_predicates));
                     }

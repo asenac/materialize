@@ -26,9 +26,9 @@
 //!
 //! Some comments have been inherited from the `Demand` transform.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
-use expr::{Id, JoinInputMapper, MirRelationExpr, MirScalarExpr};
+use expr::{BinaryFunc, Id, JoinInputMapper, MirRelationExpr, MirScalarExpr};
 
 use crate::TransformArgs;
 
@@ -358,7 +358,52 @@ impl ProjectionPushdown {
             }
 
             // @todo asenac
-            MirRelationExpr::OuterJoin { .. } | MirRelationExpr::FullOuterJoin { .. } => Vec::new(),
+            MirRelationExpr::OuterJoin {
+                preserving,
+                non_preserving,
+                predicates,
+            } => {
+                let preserving_arity = preserving.arity();
+                if !desired_projection.iter().any(|c| *c >= preserving_arity) {
+                    let mut non_preserving_cols = HashSet::new();
+                    for p in predicates.iter() {
+                        if let MirScalarExpr::CallBinary {
+                            func: BinaryFunc::Eq,
+                            expr1,
+                            expr2,
+                        } = p
+                        {
+                            match (&**expr1, &**expr2) {
+                                (MirScalarExpr::Column(c1), MirScalarExpr::Column(c2))
+                                    if *c1 >= preserving_arity && *c2 >= preserving_arity => {}
+                                (MirScalarExpr::Column(c1), _) | (_, MirScalarExpr::Column(c1))
+                                    if *c1 >= preserving_arity =>
+                                {
+                                    non_preserving_cols.insert(c1 - preserving_arity);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    let non_preserving_typ = non_preserving.typ();
+                    if non_preserving_typ
+                        .keys
+                        .iter()
+                        .any(|k| k.iter().all(|c| non_preserving_cols.contains(c)))
+                    {
+                        *relation = preserving
+                            .take_dangerous()
+                            .project(desired_projection.clone());
+                        desired_projection.clone()
+                    } else {
+                        (0..relation.arity()).collect()
+                    }
+                } else {
+                    (0..relation.arity()).collect()
+                }
+            }
+            MirRelationExpr::FullOuterJoin { .. } => (0..relation.arity()).collect(),
         };
         let add_project = desired_projection != actual_projection;
         if add_project {

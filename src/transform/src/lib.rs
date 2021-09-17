@@ -295,6 +295,7 @@ impl Optimizer {
     pub fn physical_optimizer() -> Self {
         // Implementation transformations
         let transforms: Vec<Box<dyn crate::Transform + Send>> = vec![
+            Box::new(crate::projection_pushdown::ProjectionPushdown),
             Box::new(crate::physical_lowering::OuterJoinLowering),
             Box::new(crate::projection_pushdown::ProjectionPushdown),
             // Types need to be updates after ProjectionPushdown

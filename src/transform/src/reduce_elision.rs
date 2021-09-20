@@ -15,6 +15,7 @@
 
 use crate::TransformArgs;
 use expr::{func, MirRelationExpr, MirScalarExpr};
+use repr::RelationType;
 
 /// Removes `Reduce` when the input has as unique keys the keys of the reduce.
 #[derive(Debug)]
@@ -26,8 +27,14 @@ impl crate::Transform for ReduceElision {
         relation: &mut MirRelationExpr,
         _: TransformArgs,
     ) -> Result<(), crate::TransformError> {
+        let mut type_stack = Vec::new();
         relation.visit_mut(&mut |e| {
-            self.action(e);
+            let num_inputs = e.num_inputs();
+            let input_types = &type_stack[type_stack.len() - num_inputs..];
+            let mut relation_type = e.typ_with_input_types(input_types);
+            self.action(e, &mut relation_type, input_types);
+            type_stack.truncate(type_stack.len() - num_inputs);
+            type_stack.push(relation_type);
         });
         Ok(())
     }
@@ -35,7 +42,12 @@ impl crate::Transform for ReduceElision {
 
 impl ReduceElision {
     /// Removes `Reduce` when the input has as unique keys the keys of the reduce.
-    pub fn action(&self, relation: &mut MirRelationExpr) {
+    pub fn action(
+        &self,
+        relation: &mut MirRelationExpr,
+        _relation_type: &mut RelationType,
+        input_types: &[RelationType],
+    ) {
         if let MirRelationExpr::Reduce {
             input,
             group_key,
@@ -44,7 +56,7 @@ impl ReduceElision {
             expected_group_size: _,
         } = relation
         {
-            let input_type = input.typ();
+            let input_type = input_types.first().unwrap();
             if input_type.keys.iter().any(|keys| {
                 keys.iter()
                     .all(|k| group_key.contains(&expr::MirScalarExpr::Column(*k)))
@@ -56,7 +68,7 @@ impl ReduceElision {
                     .map(|a| match a.func {
                         // Count is one if non-null, and zero if null.
                         AggregateFunc::Count => {
-                            let column_type = a.typ(&input_type);
+                            let column_type = a.typ(input_type);
                             a.expr
                                 .clone()
                                 .call_unary(UnaryFunc::IsNull(func::IsNull))

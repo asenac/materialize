@@ -167,9 +167,10 @@ impl HirRelationExpr {
             Project { input, outputs } => {
                 // Projections should be applied to the decorrelated `inner`, and to its columns,
                 // which means rebasing `outputs` to start `get_outer.arity()` columns later.
-                let input = input.applied_to(id_gen, get_outer.clone(), col_map);
-                let outputs = (0..get_outer.arity())
-                    .chain(outputs.into_iter().map(|i| get_outer.arity() + i))
+                let outer_arity = get_outer.arity();
+                let input = input.applied_to(id_gen, get_outer, col_map);
+                let outputs = (0..outer_arity)
+                    .chain(outputs.into_iter().map(|i| outer_arity + i))
                     .collect::<Vec<_>>();
                 input.project(outputs)
             }
@@ -419,9 +420,10 @@ impl HirRelationExpr {
                 // Reduce may contain expressions with correlated subqueries.
                 // In addition, here an empty reduction key signifies that we need to supply default values
                 // in the case that there are no results (as in a SQL aggregation without an explicit GROUP BY).
+                let outer_arity = get_outer.arity();
                 let mut input = input.applied_to(id_gen, get_outer.clone(), col_map);
-                let applied_group_key = (0..get_outer.arity())
-                    .chain(group_key.iter().map(|i| get_outer.arity() + i))
+                let applied_group_key = (0..outer_arity)
+                    .chain(group_key.iter().map(|i| outer_arity + i))
                     .collect();
                 let applied_aggregates = aggregates
                     .into_iter()
@@ -459,14 +461,15 @@ impl HirRelationExpr {
                 offset,
             } => {
                 // TopK is uncomplicated, except that we must group by the columns of `get_outer` as well.
-                let input = input.applied_to(id_gen, get_outer.clone(), col_map);
-                let applied_group_key = (0..get_outer.arity())
-                    .chain(group_key.iter().map(|i| get_outer.arity() + i))
+                let outer_arity = get_outer.arity();
+                let input = input.applied_to(id_gen, get_outer, col_map);
+                let applied_group_key = (0..outer_arity)
+                    .chain(group_key.iter().map(|i| outer_arity + i))
                     .collect();
                 let applied_order_key = order_key
                     .iter()
                     .map(|column_order| ColumnOrder {
-                        column: column_order.column + get_outer.arity(),
+                        column: column_order.column + outer_arity,
                         desc: column_order.desc,
                     })
                     .collect();

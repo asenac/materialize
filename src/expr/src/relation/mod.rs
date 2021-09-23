@@ -628,35 +628,40 @@ impl MirRelationExpr {
 
     /// Reports the schema of the relation.
     ///
-    /// This method determines the type through recursive traversal of the
+    /// This method determines the type through iterative traversal of the
     /// relation expression, drawing from the types of base collections.
     /// As such, this is not an especially cheap method, and should be used
     /// judiciously.
     pub fn typ(&self) -> RelationType {
-        let mut type_stack = Vec::new();
-        self.visit_pre_post(
-            &mut |e: &MirRelationExpr| -> Option<Vec<&MirRelationExpr>> {
-                if let MirRelationExpr::Let { body, .. } = &e {
-                    // do not traverse the value sub-graph
-                    Some(vec![&*body])
-                } else {
-                    None
-                }
-            },
-            &mut |e: &MirRelationExpr| {
-                if let MirRelationExpr::Let { .. } = &e {
-                    let body_typ = type_stack.pop().unwrap();
-                    // insert a dummy relation type
-                    type_stack.push(RelationType::empty());
-                    type_stack.push(body_typ);
-                }
-                let num_inputs = e.num_inputs();
-                let relation_type =
-                    e.typ_with_input_types(&type_stack[type_stack.len() - num_inputs..]);
-                type_stack.truncate(type_stack.len() - num_inputs);
-                type_stack.push(relation_type);
-            },
-        );
+        let mut relation_stack = vec![self];
+        let mut out_stack = Vec::new();
+        let mut required_capacity = 1;
+        while let Some(e) = relation_stack.pop() {
+            out_stack.push(e);
+            if let MirRelationExpr::Let { body, .. } = e {
+                // we don't need to visit its value
+                relation_stack.push(&*body);
+                required_capacity = std::cmp::max(required_capacity, relation_stack.len() + 1);
+            } else {
+                e.visit1(|r| relation_stack.push(r));
+                required_capacity = std::cmp::max(required_capacity, relation_stack.len());
+            }
+        }
+        let mut type_stack = Vec::with_capacity(required_capacity);
+        while let Some(e) = out_stack.pop() {
+            if let MirRelationExpr::Let { .. } = &e {
+                let body_typ = type_stack.pop().unwrap();
+                // insert a dummy relation type in value's position as expected by
+                // `typ_with_input_types` method.
+                type_stack.push(RelationType::empty());
+                type_stack.push(body_typ);
+            }
+            let num_inputs = e.num_inputs();
+            let relation_type =
+                e.typ_with_input_types(&type_stack[type_stack.len() - num_inputs..]);
+            type_stack.truncate(type_stack.len() - num_inputs);
+            type_stack.push(relation_type);
+        }
         assert_eq!(type_stack.len(), 1);
         type_stack.pop().unwrap()
     }

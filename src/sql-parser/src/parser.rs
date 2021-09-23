@@ -2641,6 +2641,17 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_boolean_value(&mut self) -> Result<bool, ParserError> {
+        match self.next_token() {
+            Some(t) => match t {
+                Token::Keyword(TRUE) => Ok(true),
+                Token::Keyword(FALSE) => Ok(false),
+                _ => self.expected(self.peek_prev_pos(), "boolean value", Some(t)),
+            },
+            None => self.expected(self.peek_prev_pos(), "boolean value", None),
+        }
+    }
+
     fn parse_value_array(&mut self) -> Result<Value, ParserError> {
         let mut values = vec![];
         loop {
@@ -3964,9 +3975,15 @@ impl<'a> Parser<'a> {
     /// has already been consumed.
     fn parse_explain(&mut self) -> Result<Statement<Raw>, ParserError> {
         // (TYPED)?
-        let options = ExplainOptions {
-            typed: self.parse_keyword(TYPED),
-        };
+        let typed = self.parse_keyword(TYPED);
+        let mut timing = false;
+
+        // options: (TIMERS (true|false))?
+        if self.consume_token(&Token::LParen) {
+            self.expect_keyword(TIMERS)?;
+            timing = self.parse_boolean_value()?;
+            self.expect_token(&Token::RParen)?;
+        }
 
         // (RAW | DECORRELATED | OPTIMIZED)? PLAN
         let stage = match self.parse_one_of_keywords(&[RAW, DECORRELATED, OPTIMIZED, PLAN]) {
@@ -3997,6 +4014,7 @@ impl<'a> Parser<'a> {
             Explainee::Query(self.parse_query()?)
         };
 
+        let options = ExplainOptions { typed, timing };
         Ok(Statement::Explain(ExplainStatement {
             stage,
             explainee,

@@ -67,8 +67,9 @@ use build_info::{BuildInfo, DUMMY_BUILD_INFO};
 use dataflow::{TimestampBindingFeedback, WorkerFeedback};
 use dataflow_types::logging::LoggingConfig as DataflowLoggingConfig;
 use dataflow_types::{
-    DataflowDesc, ExternalSourceConnector, IndexDesc, PeekResponse, PostgresSourceConnector,
-    SinkConnector, SourceConnector, TailResponse, TailSinkConnector, TimestampSourceUpdate, Update,
+    DataflowDesc, DataflowDescription, ExternalSourceConnector, IndexDesc, PeekResponse,
+    PostgresSourceConnector, SinkConnector, SourceConnector, TailResponse, TailSinkConnector,
+    TimestampSourceUpdate, Update,
 };
 use dataflow_types::{SinkAsOf, SinkEnvelope, Timeline};
 use expr::{
@@ -95,8 +96,8 @@ use sql::plan::{
     AlterItemRenamePlan, CreateDatabasePlan, CreateIndexPlan, CreateRolePlan, CreateSchemaPlan,
     CreateSinkPlan, CreateSourcePlan, CreateTablePlan, CreateTypePlan, CreateViewPlan,
     CreateViewsPlan, DropDatabasePlan, DropItemsPlan, DropRolesPlan, DropSchemaPlan, ExplainPlan,
-    FetchPlan, IndexOption, IndexOptionName, InsertPlan, MutationKind, Params, PeekPlan, PeekWhen,
-    Plan, SendDiffsPlan, SetVariablePlan, ShowVariablePlan, Source, TailPlan,
+    FetchPlan, HirRelationExpr, IndexOption, IndexOptionName, InsertPlan, MutationKind, Params,
+    PeekPlan, PeekWhen, Plan, SendDiffsPlan, SetVariablePlan, ShowVariablePlan, Source, TailPlan,
 };
 use sql::plan::{StatementDesc, View};
 use transform::Optimizer;
@@ -3006,13 +3007,50 @@ impl Coordinator {
     ) -> Result<ExecuteResponse, CoordError> {
         let ExplainPlan {
             raw_plan,
-            decorrelated_plan,
             row_set_finishing,
             stage,
             options,
         } = plan;
+        use std::time::Instant;
 
-        let explanation_string = match stage {
+        struct Timings {
+            decorrelation: Option<Duration>,
+            optimization: Option<Duration>,
+        }
+
+        let mut timings = Timings {
+            decorrelation: None,
+            optimization: None,
+        };
+
+        let decorrelate = |timings: &mut Timings, raw_plan: HirRelationExpr| -> MirRelationExpr {
+            let start = Instant::now();
+            let decorrelated_plan = raw_plan.lower();
+            timings.decorrelation = Some(start.elapsed());
+            decorrelated_plan
+        };
+
+        let optimize =
+            |timings: &mut Timings,
+             coord: &mut Coordinator,
+             decorrelated_plan: MirRelationExpr|
+             -> Result<DataflowDescription<OptimizedMirRelationExpr>, CoordError> {
+                let start = Instant::now();
+                let optimized_plan =
+                    coord.prep_relation_expr(decorrelated_plan, ExprPrepStyle::Explain)?;
+                let mut dataflow = DataflowDesc::new(format!("explanation"));
+                coord.dataflow_builder().import_view_into_dataflow(
+                    // TODO: If explaining a view, pipe the actual id of the view.
+                    &GlobalId::Explain,
+                    &optimized_plan,
+                    &mut dataflow,
+                );
+                transform::optimize_dataflow(&mut dataflow, coord.catalog.enabled_indexes());
+                timings.optimization = Some(start.elapsed());
+                Ok(dataflow)
+            };
+
+        let mut explanation_string = match stage {
             ExplainStage::RawPlan => {
                 let catalog = self.catalog.for_session(session);
                 let mut explanation = sql::plan::Explanation::new(&raw_plan, &catalog);
@@ -3025,6 +3063,7 @@ impl Coordinator {
                 explanation.to_string()
             }
             ExplainStage::DecorrelatedPlan => {
+                let decorrelated_plan = decorrelate(&mut timings, raw_plan);
                 let catalog = self.catalog.for_session(session);
                 let mut explanation =
                     dataflow_types::Explanation::new(&decorrelated_plan, &catalog);
@@ -3037,17 +3076,9 @@ impl Coordinator {
                 explanation.to_string()
             }
             ExplainStage::OptimizedPlan => {
+                let decorrelated_plan = decorrelate(&mut timings, raw_plan);
                 self.validate_timeline(decorrelated_plan.global_uses())?;
-                let optimized_plan =
-                    self.prep_relation_expr(decorrelated_plan, ExprPrepStyle::Explain)?;
-                let mut dataflow = DataflowDesc::new(format!("explanation"));
-                self.dataflow_builder().import_view_into_dataflow(
-                    // TODO: If explaining a view, pipe the actual id of the view.
-                    &GlobalId::Explain,
-                    &optimized_plan,
-                    &mut dataflow,
-                );
-                transform::optimize_dataflow(&mut dataflow, self.catalog.enabled_indexes());
+                let dataflow = optimize(&mut timings, self, decorrelated_plan)?;
                 let catalog = self.catalog.for_session(session);
                 let mut explanation =
                     dataflow_types::Explanation::new_from_dataflow(&dataflow, &catalog);
@@ -3060,6 +3091,23 @@ impl Coordinator {
                 explanation.to_string()
             }
         };
+        if options.timing {
+            if let Some(decorrelation) = &timings.decorrelation {
+                explanation_string.push_str(&format!(
+                    "\nDecorrelation time: {}",
+                    decorrelation.as_micros()
+                ));
+            }
+            if let Some(optimization) = &timings.optimization {
+                explanation_string.push_str(&format!(
+                    "\nOptimization time: {}",
+                    optimization.as_micros()
+                ));
+            }
+            if timings.decorrelation.is_some() || timings.optimization.is_some() {
+                explanation_string.push_str("\n");
+            }
+        }
         let rows = vec![Row::pack_slice(&[Datum::from(&*explanation_string)])];
         Ok(send_immediate_rows(rows))
     }

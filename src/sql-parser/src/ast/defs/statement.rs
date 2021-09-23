@@ -1279,6 +1279,11 @@ pub struct ExplainStatement<T: AstInfo> {
 impl<T: AstInfo> AstDisplay for ExplainStatement<T> {
     fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
         f.write_str("EXPLAIN ");
+        if self.options.timing {
+            f.write_str("(TIMERS ");
+            f.write_str(self.options.timing);
+            f.write_str(") ");
+        }
         if self.options.typed {
             f.write_str("TYPED ");
         }
@@ -1563,6 +1568,7 @@ pub enum Explainee<T: AstInfo> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExplainOptions {
     pub typed: bool,
+    pub timing: bool,
 }
 
 impl<T: AstInfo> AstDisplay for Explainee<T> {

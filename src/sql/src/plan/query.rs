@@ -706,27 +706,44 @@ pub fn plan_mutation_query(
         typ: desc.typ().clone(),
     };
 
+    let get_scope = Scope::from_source(
+        Some(PartialName::from(table.name().clone())),
+        desc.iter_names(),
+        None,
+    );
+    let get_relation_type = RelationType::new(desc.iter_types().cloned().collect());
+
     let selection: HirRelationExpr = match selection {
         Some(mut expr) => {
+            // @todo compile the USING join if any
+            let using_join = HirRelationExpr::constant(vec![Vec::new()], RelationType::empty());
+            let using_scope = Scope::empty(None);
+
             transform_ast::transform_expr(scx, &mut expr)?;
+            let mut qcx = qcx.derived_context(get_scope, &get_relation_type);
             let expr = resolve_names_expr(&mut qcx, expr)?;
             let ecx = &ExprContext {
                 qcx: &qcx,
                 name: "WHERE clause",
-                scope: &Scope::from_source(
-                    Some(PartialName::from(table.name().clone())),
-                    desc.iter_names(),
-                    None,
-                ),
-                relation_type: &RelationType::new(desc.iter_types().cloned().collect()),
+                scope: &Scope::empty(Some(qcx.outer_scope.clone())).product(using_scope),
+                relation_type: &qcx.relation_type(&using_join),
                 allow_aggregates: false,
                 allow_subqueries: true,
             };
+
             let expr = plan_expr(&ecx, &expr)?.type_as(&ecx, &ScalarType::Bool)?;
-            HirRelationExpr::Filter {
-                input: Box::new(get),
+            let filtered = HirRelationExpr::Filter {
+                input: Box::new(using_join),
                 predicates: vec![expr],
-            }
+            };
+            let aggr = AggregateExpr {
+                func: crate::plan::expr::AggregateFunc::Any,
+                expr: Box::new(HirScalarExpr::literal_true()),
+                distinct: false,
+            };
+            let reduced = filtered.reduce(Vec::new(), vec![aggr], None);
+            let predicate = HirScalarExpr::Select(Box::new(reduced));
+            get.filter(vec![predicate])
         }
         None => get,
     };

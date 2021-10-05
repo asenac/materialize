@@ -145,6 +145,7 @@ impl HirRelationExpr {
         use self::HirRelationExpr::*;
         use expr::MirRelationExpr as SR;
         if let expr::MirRelationExpr::Get { .. } = &get_outer {
+        } else if get_outer.is_identity() {
         } else {
             panic!(
                 "get_outer: expected a MirRelationExpr::Get, found {:?}",

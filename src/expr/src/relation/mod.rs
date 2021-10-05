@@ -771,7 +771,13 @@ impl MirRelationExpr {
 
     /// Form the Cartesian outer-product of rows in both inputs.
     pub fn product(self, right: Self) -> Self {
-        MirRelationExpr::join(vec![self, right], vec![])
+        if self.is_identity() {
+            right
+        } else if right.is_identity() {
+            self
+        } else {
+            MirRelationExpr::join(vec![self, right], vec![])
+        }
     }
 
     /// Performs a relational equijoin among the input collections.
@@ -959,6 +965,18 @@ impl MirRelationExpr {
     pub fn is_empty(&self) -> bool {
         if let MirRelationExpr::Constant { rows: Ok(rows), .. } = self {
             rows.is_empty()
+        } else {
+            false
+        }
+    }
+
+    pub fn is_identity(&self) -> bool {
+        if let MirRelationExpr::Constant {
+            rows: Ok(rows),
+            typ,
+        } = self
+        {
+            typ.column_types.is_empty() && rows.len() == 1
         } else {
             false
         }
@@ -1365,6 +1383,8 @@ impl MirRelationExpr {
     {
         if let MirRelationExpr::Get { .. } = self {
             // already done
+            body(id_gen, self)
+        } else if self.is_identity() {
             body(id_gen, self)
         } else {
             let id = LocalId::new(id_gen.allocate_id());

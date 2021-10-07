@@ -562,7 +562,7 @@ impl MirRelationExpr {
                 // the multiplicity is -1 rather than 1. This breaks many
                 // of the optimization uses of "keys".
                 let mut typ = input_types[0].clone();
-                typ.keys.clear();
+                std::mem::swap(&mut typ.keys, &mut typ.negated_keys);
                 typ
             }
             MirRelationExpr::Threshold { .. } => input_types[0].clone(),
@@ -577,6 +577,26 @@ impl MirRelationExpr {
                             .map_err(|e| format!("{}\nIn {:#?}", e, self))
                             .unwrap();
                     }
+                }
+
+                let mut keys = Vec::new();
+                for (i, input_type) in input_types.iter().enumerate() {
+                    if input_type.keys.is_empty() && input_type.negated_keys.is_empty() {
+                        break;
+                    }
+                    keys.extend(
+                        input_type
+                            .keys
+                            .iter()
+                            .filter(|k| {
+                                input_types
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(j, _)| *j != i)
+                                    .all(|(_, t)| t.negated_keys.contains(k))
+                            })
+                            .cloned(),
+                    );
                 }
 
                 // Generally, unions do not have any unique keys, because
@@ -610,7 +630,6 @@ impl MirRelationExpr {
                         // with the project being all columns in the input in order.
                         ((0..base_cols.len()).collect::<Vec<_>>(), &**base)
                     };
-                let mut keys = Vec::new();
                 if let MirRelationExpr::Get {
                     id: first_id,
                     typ: _,

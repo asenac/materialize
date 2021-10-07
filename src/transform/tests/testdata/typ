@@ -13,6 +13,7 @@
 cat
 (defsource x ([int32 int64 int32]))
 (defsource y ([int64 int32 int32]))
+(defsource z ([int64 int32 int32] [[1]]))
 ----
 ok
 
@@ -158,5 +159,29 @@ build format=types
 | | implementation = Unimplemented
 | | types = (Int32?, Int64?, Int32?, Int64?, Int32?, Int32?)
 | | keys = ()
+----
+----
+
+build format=types
+(union [(get z) (negate (get z))])
+----
+----
+%0 =
+| Get z (u2)
+| | types = (Int64?, Int32?, Int32?)
+| | keys = ((#1))
+
+%1 =
+| Get z (u2)
+| | types = (Int64?, Int32?, Int32?)
+| | keys = ((#1))
+| Negate
+| | types = (Int64?, Int32?, Int32?)
+| | keys = ()
+
+%2 =
+| Union %0 %1
+| | types = (Int64?, Int32?, Int32?)
+| | keys = ((#1))
 ----
 ----

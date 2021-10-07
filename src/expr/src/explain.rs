@@ -355,7 +355,10 @@ impl<'a> ViewExplanation<'a> {
             )?,
         }
 
-        if let Some(RelationType { column_types, keys }) = &node.typ {
+        if let Some(RelationType {
+            column_types, keys, ..
+        }) = &node.typ
+        {
             let column_types: Vec<_> = column_types
                 .iter()
                 .map(|c| self.expr_humanizer.humanize_column_type(c))

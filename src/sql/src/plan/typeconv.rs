@@ -690,6 +690,7 @@ pub fn plan_hypothetical_cast(
             scalar_type: from.clone(),
         }],
         keys: vec![vec![0]],
+        negated_keys: Vec::new(),
     };
     let ecx = ExprContext {
         qcx: &qcx,

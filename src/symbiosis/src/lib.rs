@@ -194,7 +194,11 @@ END $$;
                     defaults.push(default);
                     depends_on.extend(ids);
                 }
-                let mut typ = RelationType { column_types, keys };
+                let mut typ = RelationType {
+                    column_types,
+                    keys,
+                    negated_keys: Vec::new(),
+                };
 
                 // Handle table-level UNIQUE and PRIMARY KEY constraints.
                 // PRIMARY KEY implies UNIQUE and NOT NULL.

@@ -153,7 +153,7 @@ Final:
 ====
 ====
 Catalog defs:
-(defsource u1 ([(Int64 true) (Int64 true)] []))
+(defsource u1 ([(Int64 true) (Int64 true)] [] []))
 ----
 ----
 
@@ -177,6 +177,6 @@ build format=json
     ]
 )
 ----
-{"Filter":{"input":{"Join":{"inputs":[{"Get":{"id":{"Global":{"User":1}},"typ":{"column_types":[{"scalar_type":"Int64","nullable":true},{"scalar_type":"Int64","nullable":true}],"keys":[]}}},{"Get":{"id":{"Global":{"User":0}},"typ":{"column_types":[{"scalar_type":"Bool","nullable":true},{"scalar_type":"Bool","nullable":true}],"keys":[]}}}],"equivalences":[],"demand":null,"implementation":"Unimplemented"}},"predicates":[{"CallBinary":{"func":"Or","expr1":{"CallBinary":{"func":"And","expr1":{"CallUnary":{"func":{"IsNull":null},"expr":{"Column":0}}},"expr2":{"CallUnary":{"func":{"IsNull":null},"expr":{"Column":2}}}}},"expr2":{"CallBinary":{"func":"Eq","expr1":{"Column":0},"expr2":{"CallBinary":{"func":"AddInt64","expr1":{"Column":2},"expr2":{"Literal":[{"Ok":{"data":[5,1,0,0,0,0,0,0,0]}},{"scalar_type":"Int64","nullable":false}]}}}}}}}]}}
+{"Filter":{"input":{"Join":{"inputs":[{"Get":{"id":{"Global":{"User":1}},"typ":{"column_types":[{"scalar_type":"Int64","nullable":true},{"scalar_type":"Int64","nullable":true}],"keys":[],"negated_keys":[]}}},{"Get":{"id":{"Global":{"User":0}},"typ":{"column_types":[{"scalar_type":"Bool","nullable":true},{"scalar_type":"Bool","nullable":true}],"keys":[],"negated_keys":[]}}}],"equivalences":[],"demand":null,"implementation":"Unimplemented"}},"predicates":[{"CallBinary":{"func":"Or","expr1":{"CallBinary":{"func":"And","expr1":{"CallUnary":{"func":{"IsNull":null},"expr":{"Column":0}}},"expr2":{"CallUnary":{"func":{"IsNull":null},"expr":{"Column":2}}}}},"expr2":{"CallBinary":{"func":"Eq","expr1":{"Column":0},"expr2":{"CallBinary":{"func":"AddInt64","expr1":{"Column":2},"expr2":{"Literal":[{"Ok":{"data":[5,1,0,0,0,0,0,0,0]}},{"scalar_type":"Int64","nullable":false}]}}}}}}}]}}
 
 ## #endregion

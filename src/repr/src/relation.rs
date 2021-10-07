@@ -131,6 +131,10 @@ pub struct RelationType {
     /// have either zero or one sets of key indices.
     #[serde(default)]
     pub keys: Vec<Vec<usize>>,
+
+    /// @todo asenac
+    #[serde(default)]
+    pub negated_keys: Vec<Vec<usize>>,
 }
 
 impl RelationType {
@@ -147,6 +151,7 @@ impl RelationType {
         RelationType {
             column_types,
             keys: Vec::new(),
+            negated_keys: Vec::new(),
         }
     }
 
@@ -169,6 +174,21 @@ impl RelationType {
     /// Computes the number of columns in the relation.
     pub fn arity(&self) -> usize {
         self.column_types.len()
+    }
+
+    pub fn with_negated_key(mut self, mut indices: Vec<usize>) -> Self {
+        indices.sort_unstable();
+        if !self.negated_keys.contains(&indices) {
+            self.negated_keys.push(indices);
+        }
+        self
+    }
+
+    pub fn with_negated_keys(mut self, negated_keys: Vec<Vec<usize>>) -> Self {
+        for negated_key in negated_keys {
+            self = self.with_negated_key(negated_key)
+        }
+        self
     }
 
     /// Gets the index of the columns used when creating a default index.

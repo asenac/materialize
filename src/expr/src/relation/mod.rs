@@ -354,6 +354,16 @@ impl MirRelationExpr {
                         );
                     }
                 }
+                for negated_keys in input_typ.negated_keys.iter() {
+                    if negated_keys.iter().all(|k| outputs.contains(k)) {
+                        output_typ = output_typ.with_negated_key(
+                            negated_keys
+                                .iter()
+                                .map(|c| outputs.iter().position(|o| o == c).unwrap())
+                                .collect(),
+                        );
+                    }
+                }
                 output_typ
             }
             MirRelationExpr::Map { scalars, .. } => {

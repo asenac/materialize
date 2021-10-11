@@ -21,7 +21,7 @@ pub trait VisitMutExpr {
         post: &mut FnPost,
     ) where
         FnPre: FnMut(&mut Self),
-        FnIn: FnMut(&mut Self, usize),
+        FnIn: FnMut(&Self, usize),
         FnPost: FnMut(&mut Self);
 }
 
@@ -36,7 +36,7 @@ pub trait MutExprVisitor<Expr: VisitMutExpr, Data: Default> {
     /// Invoked after leaving the scope of a child expression and before entering
     /// the scope of the next child expression. Receives the index of the next
     /// child expression to be visited.
-    fn in_visit(&self, _expr: &mut Expr, _input_idx: usize, _data: &mut Data) {}
+    fn in_visit(&self, _expr: &Expr, _input_idx: usize, _data: &mut Data) {}
 
     /// Invoked when leaving the scope of the given expression.
     fn post_visit(&self, _expr: &mut Expr, _data: &mut Data) {}

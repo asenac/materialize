@@ -47,6 +47,7 @@ pub mod reduce_elision;
 pub mod reduction;
 pub mod reduction_pushdown;
 pub mod redundant_join;
+pub mod rewrite_engine;
 pub mod topk_elision;
 pub mod union_cancel;
 pub mod update_let;

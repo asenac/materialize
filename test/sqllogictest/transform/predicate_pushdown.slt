@@ -104,8 +104,11 @@ SELECT a FROM (SELECT DISTINCT a FROM x UNION ALL SELECT a FROM y) WHERE a = 3
 | Join %0 %3
 | | implementation = Unimplemented
 
-%5 =
+%5 = Let l1 =
 | Union %2 %4
+
+%6 =
+| Get %5 (l1)
 | Filter (#0 = 3)
 
 EOF

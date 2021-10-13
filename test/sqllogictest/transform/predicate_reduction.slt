@@ -79,9 +79,12 @@ EXPLAIN DECORRELATED PLAN FOR SELECT * FROM t1 WHERE (f1 is null)::int - 1 = 0 a
 %1 =
 | Get materialize.public.t1 (u1)
 
-%2 =
+%2 = Let l1 =
 | Join %0 %1
 | | implementation = Unimplemented
+
+%3 =
+| Get %2 (l1)
 | Filter (((booltoi32(isnull(#0)) - 1) = 0) && (isnull(#0) || ((booltoi32(isnull(#0)) - 1) = 0)))
 
 EOF

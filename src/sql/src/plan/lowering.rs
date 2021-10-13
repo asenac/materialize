@@ -262,15 +262,19 @@ impl HirRelationExpr {
                 // We extend `get_outer` with sufficient values to determine the value of the predicate,
                 // then filter the results, then strip off any columns that were added for this purpose.
                 let mut input = input.applied_to(id_gen, get_outer, col_map);
+                let old_arity = input.arity();
+                let (with_subqueries, subquery_map) =
+                    HirScalarExpr::lower_subqueries(&predicates, id_gen, col_map, input);
+                input = with_subqueries;
                 for predicate in predicates {
-                    let old_arity = input.arity();
-                    let predicate = predicate.applied_to(id_gen, col_map, &mut input, &None);
-                    let new_arity = input.arity();
+                    let predicate =
+                        predicate.applied_to(id_gen, col_map, &mut input, &Some(&subquery_map));
                     input = input.filter(vec![predicate]);
-                    if old_arity != new_arity {
-                        // this means we added some columns to handle subqueries, and now we need to get rid of them
-                        input = input.project((0..old_arity).collect());
-                    }
+                }
+
+                if old_arity != input.arity() {
+                    // this means we added some columns to handle subqueries, and now we need to get rid of them
+                    input = input.project((0..old_arity).collect());
                 }
                 input
             }

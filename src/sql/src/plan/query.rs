@@ -1159,9 +1159,7 @@ fn plan_query(
     qcx: &mut QueryContext,
     q: &Query<Aug>,
 ) -> Result<(HirRelationExpr, Scope, RowSetFinishing), anyhow::Error> {
-    // Retain the old values of various CTE names so that we can restore them
-    // after we're done planning this SELECT.
-    let mut old_cte_values = Vec::new();
+    let mut cte_ids = Vec::new();
     // A single WITH block cannot use the same name multiple times.
     let mut used_names = HashSet::new();
     for cte in &q.ctes {
@@ -1187,7 +1185,7 @@ fn plan_query(
 
         match cte.id {
             Id::Local(id) => {
-                let old_val = qcx.ctes.insert(
+                let _ = qcx.ctes.insert(
                     id,
                     CteDesc {
                         val,
@@ -1195,7 +1193,7 @@ fn plan_query(
                         level_offset: 0,
                     },
                 );
-                old_cte_values.push((cte_name, old_val));
+                cte_ids.push(id);
             }
             _ => unreachable!(),
         }
@@ -1251,6 +1249,21 @@ fn plan_query(
             };
             Ok((expr.map(map_exprs), scope, finishing))
         }
+    };
+
+    let result = match result {
+        Ok((mut expr, scope, finishing)) => {
+            for cte in cte_ids.into_iter().rev() {
+                let value = qcx.ctes.get(&cte).unwrap().val.clone();
+                expr = HirRelationExpr::Let {
+                    id: cte,
+                    value: Box::new(value),
+                    body: Box::new(expr),
+                }
+            }
+            Ok((expr, scope, finishing))
+        }
+        _ => result,
     };
 
     result
@@ -3750,13 +3763,10 @@ impl<'a> QueryContext<'a> {
             Id::Local(id) => {
                 let name = object.raw_name;
                 let cte = self.ctes.get(&id).unwrap();
-                let mut val = cte.val.clone();
-                val.visit_columns(0, &mut |depth, col| {
-                    if col.level > depth {
-                        col.level += cte.level_offset;
-                    }
-                });
-
+                let expr = HirRelationExpr::Get {
+                    id: Id::Local(id),
+                    typ: cte.val_desc.typ().clone(),
+                };
                 let scope = Scope::from_source(
                     Some(name),
                     cte.val_desc.iter_names().map(|n| n.cloned()),
@@ -3766,7 +3776,7 @@ impl<'a> QueryContext<'a> {
                 // Inline `val` where its name was referenced. In an ideal
                 // world, multiple instances of this expression would be
                 // de-duplicated.
-                Ok((val, scope))
+                Ok((expr, scope))
             }
             Id::Global(id) => {
                 let item = self.scx.get_item_by_id(&id);

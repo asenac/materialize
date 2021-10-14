@@ -122,6 +122,7 @@ impl<'a> Explanation<'a> {
             // First, walk the children, in order to perform a post-order
             // traversal.
             match expr {
+                Let { .. } => (), // TODO(asenac)
                 // Leaf expressions. Nothing more to visit.
                 Constant { .. } | Get { .. } | CallTable { .. } => (),
                 // Single-input expressions continue the chain.
@@ -154,6 +155,7 @@ impl<'a> Explanation<'a> {
             // Then collect subqueries.
             let mut scalars = vec![];
             match expr {
+                Let { .. } => {} // TODO(asenac)
                 Constant { .. }
                 | Get { .. }
                 | Project { .. }
@@ -245,6 +247,7 @@ impl<'a> Explanation<'a> {
         use HirRelationExpr::*;
 
         match node.expr {
+            Let { .. } => {}
             Constant { rows, .. } => {
                 write!(f, "| Constant")?;
                 for row in rows {

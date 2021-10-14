@@ -36,8 +36,6 @@ use super::Explanation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Just like MirRelationExpr, except where otherwise noted below.
-///
-/// - There is no equivalent to `MirRelationExpr::Let`.
 pub enum HirRelationExpr {
     Constant {
         rows: Vec<Row>,
@@ -46,6 +44,11 @@ pub enum HirRelationExpr {
     Get {
         id: expr::Id,
         typ: RelationType,
+    },
+    Let {
+        id: expr::LocalId,
+        value: Box<HirRelationExpr>,
+        body: Box<HirRelationExpr>,
     },
     Project {
         input: Box<HirRelationExpr>,
@@ -535,6 +538,7 @@ impl HirRelationExpr {
     ) -> RelationType {
         match self {
             HirRelationExpr::Constant { typ, .. } => typ.clone(),
+            HirRelationExpr::Let { body, .. } => body.typ(outers, params),
             HirRelationExpr::Get { typ, .. } => typ.clone(),
             HirRelationExpr::Project { input, outputs } => {
                 let input_typ = input.typ(outers, params);
@@ -625,6 +629,7 @@ impl HirRelationExpr {
     pub fn arity(&self) -> usize {
         match self {
             HirRelationExpr::Constant { typ, .. } => typ.column_types.len(),
+            HirRelationExpr::Let { body, .. } => body.arity(),
             HirRelationExpr::Get { typ, .. } => typ.column_types.len(),
             HirRelationExpr::Project { outputs, .. } => outputs.len(),
             HirRelationExpr::Map { input, scalars } => input.arity() + scalars.len(),
@@ -796,6 +801,10 @@ impl HirRelationExpr {
             HirRelationExpr::Constant { .. }
             | HirRelationExpr::Get { .. }
             | HirRelationExpr::CallTable { .. } => (),
+            HirRelationExpr::Let { value, body, .. } => {
+                f(value);
+                f(body);
+            }
             HirRelationExpr::Project { input, .. } => {
                 f(input);
             }
@@ -852,6 +861,10 @@ impl HirRelationExpr {
             HirRelationExpr::Constant { .. }
             | HirRelationExpr::Get { .. }
             | HirRelationExpr::CallTable { .. } => (),
+            HirRelationExpr::Let { value, body, .. } => {
+                f(value);
+                f(body);
+            }
             HirRelationExpr::Project { input, .. } => {
                 f(input);
             }
@@ -902,6 +915,10 @@ impl HirRelationExpr {
         F: FnMut(usize, &mut ColumnRef),
     {
         match self {
+            HirRelationExpr::Let { value, body, .. } => {
+                value.visit_columns(depth, f);
+                body.visit_columns(depth, f);
+            }
             HirRelationExpr::Join {
                 kind,
                 on,
@@ -960,6 +977,10 @@ impl HirRelationExpr {
     /// corresponding datum from `params`.
     pub fn bind_parameters(&mut self, params: &Params) -> Result<(), anyhow::Error> {
         match self {
+            HirRelationExpr::Let { value, body, .. } => {
+                value.bind_parameters(params)?;
+                body.bind_parameters(params)
+            }
             HirRelationExpr::Join {
                 on, left, right, ..
             } => {
@@ -1012,6 +1033,10 @@ impl HirRelationExpr {
     /// See the documentation for [`HirScalarExpr::splice_parameters`].
     pub fn splice_parameters(&mut self, params: &[HirScalarExpr], depth: usize) {
         match self {
+            HirRelationExpr::Let { value, body, .. } => {
+                value.splice_parameters(params, depth);
+                body.splice_parameters(params, depth);
+            }
             HirRelationExpr::Join {
                 kind,
                 on,

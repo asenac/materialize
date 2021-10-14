@@ -144,7 +144,7 @@ impl HirRelationExpr {
         id_gen: &mut expr::IdGen,
         get_outer: expr::MirRelationExpr,
         col_map: &ColumnMap,
-        id_map: &mut HashMap<expr::LocalId, expr::LocalId>,
+        id_map: &mut HashMap<expr::LocalId, (expr::LocalId, usize)>,
     ) -> expr::MirRelationExpr {
         use self::HirRelationExpr::*;
         use expr::MirRelationExpr as SR;
@@ -167,20 +167,31 @@ impl HirRelationExpr {
             Let { id, value, body } => {
                 let value = value.applied_to(id_gen, get_outer.clone(), col_map, id_map);
                 let new_id = expr::LocalId::new(id_gen.allocate_id());
-                let old_id = id_map.insert(id, new_id);
+                let old_id = id_map.insert(id, (new_id, value.arity()));
                 let body = body.applied_to(id_gen, get_outer, col_map, id_map);
                 if let Some(old_id) = old_id {
                     id_map.insert(id, old_id);
                 }
                 SR::Let {
-                    id,
+                    id: new_id,
                     value: Box::new(value),
                     body: Box::new(body),
                 }
             }
             Get { id, typ } => {
                 // Get statements are only to external sources, and are not correlated with `get_outer`.
-                get_outer.product(SR::Get { id, typ })
+                match id {
+                    expr::Id::Local(local_id) => {
+                        let (mapped_id, arity) = id_map.get(&local_id).unwrap();
+                        let get = SR::Get {
+                            id: expr::Id::Local(*mapped_id),
+                            typ,
+                        };
+                        let outer_arity = arity - typ.arity();
+                        get_outer.product(get)
+                    }
+                    _ => get_outer.product(SR::Get { id, typ }),
+                }
             }
             Project { input, outputs } => {
                 // Projections should be applied to the decorrelated `inner`, and to its columns,
@@ -526,7 +537,7 @@ impl HirScalarExpr {
         self,
         id_gen: &mut expr::IdGen,
         col_map: &ColumnMap,
-        id_map: &mut HashMap<expr::LocalId, expr::LocalId>,
+        id_map: &mut HashMap<expr::LocalId, (expr::LocalId, usize)>,
         inner: &mut expr::MirRelationExpr,
     ) -> expr::MirScalarExpr {
         use self::HirScalarExpr::*;
@@ -936,7 +947,7 @@ impl AggregateExpr {
         self,
         id_gen: &mut expr::IdGen,
         col_map: &ColumnMap,
-        id_map: &mut HashMap<expr::LocalId, expr::LocalId>,
+        id_map: &mut HashMap<expr::LocalId, (expr::LocalId, usize)>,
         inner: &mut expr::MirRelationExpr,
     ) -> expr::AggregateExpr {
         let AggregateExpr {

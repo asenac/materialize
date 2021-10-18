@@ -111,6 +111,8 @@ impl ColumnMap {
     }
 }
 
+type CteMap = HashMap<expr::LocalId, (expr::LocalId, RelationType, Vec<usize>)>;
+
 impl HirRelationExpr {
     /// Rewrite `self` into a `expr::MirRelationExpr`.
     /// This requires rewriting all correlated subqueries (nested `HirRelationExpr`s) into flat queries
@@ -144,7 +146,7 @@ impl HirRelationExpr {
         id_gen: &mut expr::IdGen,
         get_outer: expr::MirRelationExpr,
         col_map: &ColumnMap,
-        id_map: &mut HashMap<expr::LocalId, (expr::LocalId, RelationType)>,
+        id_map: &mut CteMap,
     ) -> expr::MirRelationExpr {
         use self::HirRelationExpr::*;
         use expr::MirRelationExpr as SR;
@@ -164,10 +166,18 @@ impl HirRelationExpr {
                     typ,
                 })
             }
-            Let { id, value, body } => {
+            Let {
+                id,
+                mut value,
+                body,
+            } => {
+                let outer_cols = get_outer_columns(&mut value)
+                    .into_iter()
+                    .map(|c| col_map.get(&c))
+                    .collect_vec();
                 let value = value.applied_to(id_gen, get_outer.clone(), col_map, id_map);
                 let new_id = expr::LocalId::new(id_gen.allocate_id());
-                let old_id = id_map.insert(id, (new_id, value.typ()));
+                let old_id = id_map.insert(id, (new_id, value.typ(), outer_cols));
                 let body = body.applied_to(id_gen, get_outer, col_map, id_map);
                 if let Some(old_id) = old_id {
                     id_map.insert(id, old_id);
@@ -182,22 +192,12 @@ impl HirRelationExpr {
                 // Get statements are only to external sources, and are not correlated with `get_outer`.
                 match id {
                     expr::Id::Local(local_id) => {
-                        let (mapped_id, real_typ) = id_map.get(&local_id).unwrap();
-                        let outer_arity = real_typ.arity() - typ.arity();
-                        let get_outer_arity = get_outer.arity();
+                        let (mapped_id, real_typ, _) = id_map.get(&local_id).unwrap();
                         let get = SR::Get {
                             id: expr::Id::Local(*mapped_id),
                             typ: real_typ.clone(),
                         };
-                        let equivalences = (0..outer_arity)
-                            .map(|i| {
-                                vec![
-                                    expr::MirScalarExpr::Column(i),
-                                    expr::MirScalarExpr::Column(i + get_outer_arity),
-                                ]
-                            })
-                            .collect_vec();
-                        SR::join_scalars(vec![get_outer, get], equivalences)
+                        get_outer.product(get)
                     }
                     _ => get_outer.product(SR::Get { id, typ }),
                 }
@@ -298,9 +298,10 @@ impl HirRelationExpr {
                         id_gen,
                         get_left.clone(),
                         col_map,
+                        id_map,
                         *right,
                         apply_requires_distinct_outer,
-                        |id_gen, right, get_left, col_map| {
+                        |id_gen, right, get_left, col_map, id_map| {
                             right.applied_to(id_gen, get_left, col_map, id_map)
                         },
                     );
@@ -546,7 +547,7 @@ impl HirScalarExpr {
         self,
         id_gen: &mut expr::IdGen,
         col_map: &ColumnMap,
-        id_map: &mut HashMap<expr::LocalId, (expr::LocalId, RelationType)>,
+        id_map: &mut CteMap,
         inner: &mut expr::MirRelationExpr,
     ) -> expr::MirScalarExpr {
         use self::HirScalarExpr::*;
@@ -675,9 +676,10 @@ impl HirScalarExpr {
                     id_gen,
                     inner.take_dangerous(),
                     col_map,
+                    id_map,
                     *expr,
                     apply_requires_distinct_outer,
-                    |id_gen, expr, get_inner, col_map| {
+                    |id_gen, expr, get_inner, col_map, id_map| {
                         let exists = expr
                             // compute for every row in get_inner
                             .applied_to(id_gen, get_inner.clone(), col_map, id_map)
@@ -706,9 +708,10 @@ impl HirScalarExpr {
                     id_gen,
                     inner.take_dangerous(),
                     col_map,
+                    id_map,
                     *expr,
                     apply_requires_distinct_outer,
-                    |id_gen, expr, get_inner, col_map| {
+                    |id_gen, expr, get_inner, col_map, id_map| {
                         let select = expr
                             // compute for every row in get_inner
                             .applied_to(id_gen, get_inner.clone(), col_map, id_map);
@@ -817,6 +820,7 @@ fn branch<F>(
     id_gen: &mut expr::IdGen,
     outer: expr::MirRelationExpr,
     col_map: &ColumnMap,
+    id_map: &mut CteMap,
     mut inner: HirRelationExpr,
     apply_requires_distinct_outer: bool,
     apply: F,
@@ -827,6 +831,7 @@ where
         HirRelationExpr,
         expr::MirRelationExpr,
         &ColumnMap,
+        &mut CteMap,
     ) -> expr::MirRelationExpr,
 {
     // TODO: It would be nice to have a version of this code w/o optimizations,
@@ -888,7 +893,7 @@ where
     if is_simple && !apply_requires_distinct_outer {
         let new_col_map = col_map.enter_scope(outer.arity() - col_map.len());
         return outer.let_in(id_gen, |id_gen, get_outer| {
-            apply(id_gen, inner, get_outer, &new_col_map)
+            apply(id_gen, inner, get_outer, &new_col_map, id_map)
         });
     }
 
@@ -900,16 +905,7 @@ where
     // At the end of this process, `key` contains the decorrelated position of
     // each outer column, according to the passed-in `col_map`, and
     // `new_col_map` maps each outer column to its new ordinal position in key.
-    let mut outer_cols = BTreeSet::new();
-    inner.visit_columns(0, &mut |depth, col| {
-        // Test if the column reference escapes the subquery.
-        if col.level > depth {
-            outer_cols.insert(ColumnRef {
-                level: col.level - depth,
-                column: col.column,
-            });
-        }
-    });
+    let outer_cols = get_outer_columns(&mut inner);
     let mut new_col_map = HashMap::new();
     let mut key = vec![];
     for col in outer_cols {
@@ -919,6 +915,17 @@ where
             column: col.column,
         }));
     }
+    inner.visit(&mut |r| {
+        if let HirRelationExpr::Get {
+            id: expr::Id::Local(local_id),
+            ..
+        } = r
+        {
+            if let Some((_, _, k)) = id_map.get(local_id) {
+                key.extend(k.clone());
+            }
+        }
+    });
     let new_col_map = ColumnMap::new(new_col_map);
 
     outer.let_in(id_gen, |id_gen, get_outer| {
@@ -935,7 +942,7 @@ where
         };
         keyed_outer.let_in(id_gen, |id_gen, get_keyed_outer| {
             let oa = get_outer.arity();
-            let branch = apply(id_gen, inner, get_keyed_outer, &new_col_map);
+            let branch = apply(id_gen, inner, get_keyed_outer, &new_col_map, id_map);
             let ba = branch.arity();
             let joined = expr::MirRelationExpr::join(
                 vec![get_outer.clone(), branch],
@@ -951,12 +958,26 @@ where
     })
 }
 
+fn get_outer_columns(relation: &mut HirRelationExpr) -> BTreeSet<ColumnRef> {
+    let mut outer_cols = BTreeSet::new();
+    relation.visit_columns(0, &mut |depth, col| {
+        // Test if the column reference escapes the context of the relation.
+        if col.level > depth {
+            outer_cols.insert(ColumnRef {
+                level: col.level - depth,
+                column: col.column,
+            });
+        }
+    });
+    outer_cols
+}
+
 impl AggregateExpr {
     fn applied_to(
         self,
         id_gen: &mut expr::IdGen,
         col_map: &ColumnMap,
-        id_map: &mut HashMap<expr::LocalId, (expr::LocalId, RelationType)>,
+        id_map: &mut CteMap,
         inner: &mut expr::MirRelationExpr,
     ) -> expr::AggregateExpr {
         let AggregateExpr {

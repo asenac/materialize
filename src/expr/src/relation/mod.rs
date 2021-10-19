@@ -1193,6 +1193,27 @@ impl MirRelationExpr {
         post(self);
     }
 
+    /// A generalization of `visit_mut`. The function `pre` runs on a
+    /// `MirRelationExpr` before it runs on any of the child `MirRelationExpr`s.
+    /// The function `post` runs on child `MirRelationExpr`s first before the
+    /// parent. Optionally, `pre` can return which child `MirRelationExpr`s, if
+    /// any, should be visited (default is to visit all children).
+    pub fn visit_mut_pre_post<F1, F2>(&mut self, pre: &mut F1, post: &mut F2)
+    where
+        F1: FnMut(&mut Self) -> Option<Vec<&mut MirRelationExpr>>,
+        F2: FnMut(&mut Self),
+    {
+        let to_visit = pre(self);
+        if let Some(to_visit) = to_visit {
+            for e in to_visit {
+                e.visit_mut_pre_post(pre, post);
+            }
+        } else {
+            self.visit1_mut(|e| e.visit_mut_pre_post(pre, post));
+        }
+        post(self);
+    }
+
     /// Fallible visitor for the [`MirScalarExpr`]s in the relation expression.
     /// Note that this does not recurse into the `MirScalarExpr`s themselves.
     pub fn try_visit_scalars_mut<F, E>(&mut self, f: &mut F) -> Result<(), E>

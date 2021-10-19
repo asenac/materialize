@@ -87,12 +87,17 @@ impl InlineLet {
 
             if inlinable {
                 // if only used once, just inline it
-                body.visit_mut_pre(&mut |relation| match relation {
-                    MirRelationExpr::Get { id: get_id, .. } if Id::Local(*id) == *get_id => {
-                        *relation = (**value).clone();
-                    }
-                    _ => (),
-                });
+                body.visit_mut_pre_post(
+                    &mut |relation| match relation {
+                        MirRelationExpr::Get { id: get_id, .. } if Id::Local(*id) == *get_id => {
+                            *relation = (**value).clone();
+                            // do not descend the inlined value, since no recursion is possible
+                            Some(vec![])
+                        }
+                        _ => None,
+                    },
+                    &mut |_| {},
+                );
             } else {
                 // otherwise lift it to the top so it's out of the way
                 lets.push((*id, value.take_dangerous()));

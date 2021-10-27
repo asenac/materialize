@@ -1078,30 +1078,12 @@ digraph G {
     node [ shape = box ]
     subgraph cluster5 {
         label = "Box5:Select"
-        boxhead5 [ shape = record, label="{ Distinct: Preserve| 0: Q4.C0 }" ]
-        {
-            rank = same
-            node [ shape = circle ]
-            Q4 [ label="Q4(F)" ]
-        }
-    }
-    subgraph cluster0 {
-        label = "Box0:OuterJoin"
-        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: Q1.C0| 1: Q3.C0| Q1.C0 }" ]
-        {
-            rank = same
-            node [ shape = circle ]
-            Q1 [ label="Q1(P)" ]
-            Q3 [ label="Q3(F)" ]
-        }
-    }
-    subgraph cluster2 {
-        label = "Box2:Select"
-        boxhead2 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
+        boxhead5 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
         {
             rank = same
             node [ shape = circle ]
             Q0 [ label="Q0(F)" ]
+            Q4 [ label="Q4(F)" ]
         }
     }
     subgraph cluster1 {
@@ -1109,6 +1091,15 @@ digraph G {
         boxhead1 [ shape = record, label="{ Distinct: Preserve| ROW 0:  }" ]
         {
             rank = same
+        }
+    }
+    subgraph cluster0 {
+        label = "Box0:OuterJoin"
+        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: true| 1: Q3.C0| true }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q3 [ label="Q3(F)" ]
         }
     }
     subgraph cluster4 {
@@ -1128,10 +1119,9 @@ digraph G {
         }
     }
     edge [ arrowhead = none, style = dashed ]
-    Q4 -> boxhead0 [ lhead = cluster0 ]
-    Q1 -> boxhead2 [ lhead = cluster2 ]
-    Q3 -> boxhead4 [ lhead = cluster4 ]
     Q0 -> boxhead1 [ lhead = cluster1 ]
+    Q4 -> boxhead0 [ lhead = cluster0 ]
+    Q3 -> boxhead4 [ lhead = cluster4 ]
     Q2 -> boxhead3 [ lhead = cluster3 ]
 }
 
@@ -1211,31 +1201,12 @@ digraph G {
     node [ shape = box ]
     subgraph cluster5 {
         label = "Box5:Select"
-        boxhead5 [ shape = record, label="{ Distinct: Preserve| 0: Q4.C0 }" ]
-        {
-            rank = same
-            node [ shape = circle ]
-            Q4 [ label="Q4(F)" ]
-        }
-    }
-    subgraph cluster0 {
-        label = "Box0:OuterJoin"
-        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: Q1.C0| 1: Q3.C0| Q1.C0 }" ]
-        {
-            rank = same
-            node [ shape = circle ]
-            Q1 [ label="Q1(P)" ]
-            Q3 [ label="Q3(F)" ]
-            Q3 -> Q1 [ label = "correlation", style = filled, color = red ]
-        }
-    }
-    subgraph cluster2 {
-        label = "Box2:Select"
-        boxhead2 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
+        boxhead5 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
         {
             rank = same
             node [ shape = circle ]
             Q0 [ label="Q0(F)" ]
+            Q4 [ label="Q4(F)" ]
         }
     }
     subgraph cluster1 {
@@ -1245,9 +1216,18 @@ digraph G {
             rank = same
         }
     }
+    subgraph cluster0 {
+        label = "Box0:OuterJoin"
+        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: true| 1: Q3.C0| true }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q3 [ label="Q3(F)" ]
+        }
+    }
     subgraph cluster4 {
         label = "Box4:Select"
-        boxhead4 [ shape = record, label="{ Distinct: Preserve| 0: Q1.C0 }" ]
+        boxhead4 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
         {
             rank = same
             node [ shape = circle ]
@@ -1262,10 +1242,9 @@ digraph G {
         }
     }
     edge [ arrowhead = none, style = dashed ]
-    Q4 -> boxhead0 [ lhead = cluster0 ]
-    Q1 -> boxhead2 [ lhead = cluster2 ]
-    Q3 -> boxhead4 [ lhead = cluster4 ]
     Q0 -> boxhead1 [ lhead = cluster1 ]
+    Q4 -> boxhead0 [ lhead = cluster0 ]
+    Q3 -> boxhead4 [ lhead = cluster4 ]
     Q2 -> boxhead3 [ lhead = cluster3 ]
 }
 
@@ -1366,34 +1345,12 @@ digraph G {
     node [ shape = box ]
     subgraph cluster7 {
         label = "Box7:Select"
-        boxhead7 [ shape = record, label="{ Distinct: Preserve| 0: Q6.C0 }" ]
-        {
-            rank = same
-            node [ shape = circle ]
-            Q6 [ label="Q6(F)" ]
-        }
-    }
-    subgraph cluster0 {
-        label = "Box0:OuterJoin"
-        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: Q1.C0| 1: Q3.C0| Q5.C0 }" ]
-        {
-            rank = same
-            node [ shape = circle ]
-            Q1 [ label="Q1(P)" ]
-            Q3 [ label="Q3(F)" ]
-            Q5 [ label="Q5(S)" ]
-            Q3 -> Q1 [ label = "correlation", style = filled, color = red ]
-            Q5 -> Q1 [ label = "correlation", style = filled, color = red ]
-            Q5 -> Q3 [ label = "correlation", style = filled, color = red ]
-        }
-    }
-    subgraph cluster2 {
-        label = "Box2:Select"
-        boxhead2 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
+        boxhead7 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
         {
             rank = same
             node [ shape = circle ]
             Q0 [ label="Q0(F)" ]
+            Q6 [ label="Q6(F)" ]
         }
     }
     subgraph cluster1 {
@@ -1403,9 +1360,20 @@ digraph G {
             rank = same
         }
     }
+    subgraph cluster0 {
+        label = "Box0:OuterJoin"
+        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: true| 1: Q3.C0| Q5.C0 }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q3 [ label="Q3(F)" ]
+            Q5 [ label="Q5(S)" ]
+            Q5 -> Q3 [ label = "correlation", style = filled, color = red ]
+        }
+    }
     subgraph cluster4 {
         label = "Box4:Select"
-        boxhead4 [ shape = record, label="{ Distinct: Preserve| 0: Q1.C0 }" ]
+        boxhead4 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
         {
             rank = same
             node [ shape = circle ]
@@ -1421,7 +1389,7 @@ digraph G {
     }
     subgraph cluster6 {
         label = "Box6:Select"
-        boxhead6 [ shape = record, label="{ Distinct: Preserve| 0: Q1.C0| Q3.C0 }" ]
+        boxhead6 [ shape = record, label="{ Distinct: Preserve| 0: true| Q3.C0 }" ]
         {
             rank = same
             node [ shape = circle ]
@@ -1436,11 +1404,10 @@ digraph G {
         }
     }
     edge [ arrowhead = none, style = dashed ]
+    Q0 -> boxhead1 [ lhead = cluster1 ]
     Q6 -> boxhead0 [ lhead = cluster0 ]
-    Q1 -> boxhead2 [ lhead = cluster2 ]
     Q3 -> boxhead4 [ lhead = cluster4 ]
     Q5 -> boxhead6 [ lhead = cluster6 ]
-    Q0 -> boxhead1 [ lhead = cluster1 ]
     Q2 -> boxhead3 [ lhead = cluster3 ]
     Q4 -> boxhead5 [ lhead = cluster5 ]
 }
@@ -1760,4 +1727,187 @@ digraph G {
     Q0 -> boxhead1 [ lhead = cluster1 ]
     Q3 -> boxhead4 [ lhead = cluster4 ]
     Q2 -> boxhead3 [ lhead = cluster3 ]
+}
+
+
+# TODO ColumnRemoval will remove the correlation
+build
+select * from (select true as a) x left join (select true as b) y on x.a = y.b left join (select true as c) z on x.a = z.c;
+----
+digraph G {
+    compound = true
+    labeljust = l
+    label="select * from (select true as a) x left join (select true as b) y on x.a = y.b left join (select true as c) z on x.a = z.c;
+ (before rewrites)"
+    node [ shape = box ]
+    subgraph cluster8 {
+        label = "Box8:Select"
+        boxhead8 [ shape = record, label="{ Distinct: Preserve| 0: Q7.C0| 1: Q7.C1| 2: Q7.C2 }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q7 [ label="Q7(F)" ]
+        }
+    }
+    subgraph cluster0 {
+        label = "Box0:OuterJoin"
+        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: Q4.C0| 1: Q4.C1| 2: Q6.C0| (Q4.C0 = Q6.C0) }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q4 [ label="Q4(P)" ]
+            Q6 [ label="Q6(F)" ]
+        }
+    }
+    subgraph cluster1 {
+        label = "Box1:OuterJoin"
+        boxhead1 [ shape = record, label="{ Distinct: Preserve| 0: Q1.C0| 1: Q3.C0| (Q1.C0 = Q3.C0) }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q1 [ label="Q1(P)" ]
+            Q3 [ label="Q3(F)" ]
+        }
+    }
+    subgraph cluster3 {
+        label = "Box3:Select"
+        boxhead3 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q0 [ label="Q0(F)" ]
+        }
+    }
+    subgraph cluster2 {
+        label = "Box2:Values"
+        boxhead2 [ shape = record, label="{ Distinct: Preserve| ROW 0:  }" ]
+        {
+            rank = same
+        }
+    }
+    subgraph cluster5 {
+        label = "Box5:Select"
+        boxhead5 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q2 [ label="Q2(F)" ]
+        }
+    }
+    subgraph cluster4 {
+        label = "Box4:Values"
+        boxhead4 [ shape = record, label="{ Distinct: Preserve| ROW 0:  }" ]
+        {
+            rank = same
+        }
+    }
+    subgraph cluster7 {
+        label = "Box7:Select"
+        boxhead7 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q5 [ label="Q5(F)" ]
+        }
+    }
+    subgraph cluster6 {
+        label = "Box6:Values"
+        boxhead6 [ shape = record, label="{ Distinct: Preserve| ROW 0:  }" ]
+        {
+            rank = same
+        }
+    }
+    edge [ arrowhead = none, style = dashed ]
+    Q7 -> boxhead0 [ lhead = cluster0 ]
+    Q4 -> boxhead1 [ lhead = cluster1 ]
+    Q6 -> boxhead7 [ lhead = cluster7 ]
+    Q1 -> boxhead3 [ lhead = cluster3 ]
+    Q3 -> boxhead5 [ lhead = cluster5 ]
+    Q0 -> boxhead2 [ lhead = cluster2 ]
+    Q2 -> boxhead4 [ lhead = cluster4 ]
+    Q5 -> boxhead6 [ lhead = cluster6 ]
+}
+digraph G {
+    compound = true
+    labeljust = l
+    label="select * from (select true as a) x left join (select true as b) y on x.a = y.b left join (select true as c) z on x.a = z.c;
+ (after rewrites)"
+    node [ shape = box ]
+    subgraph cluster8 {
+        label = "Box8:Select"
+        boxhead8 [ shape = record, label="{ Distinct: Preserve| 0: true| 1: Q4.C1| 2: Q7.C2 }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q0 [ label="Q0(F)" ]
+            Q4 [ label="Q4(F)" ]
+            Q7 [ label="Q7(F)" ]
+            Q7 -> Q4 [ label = "correlation", style = filled, color = red ]
+        }
+    }
+    subgraph cluster2 {
+        label = "Box2:Values"
+        boxhead2 [ shape = record, label="{ Distinct: Preserve| ROW 0:  }" ]
+        {
+            rank = same
+        }
+    }
+    subgraph cluster1 {
+        label = "Box1:OuterJoin"
+        boxhead1 [ shape = record, label="{ Distinct: Preserve| 0: true| 1: Q3.C0| (Q1.C0 = Q3.C0) }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q3 [ label="Q3(F)" ]
+        }
+    }
+    subgraph cluster5 {
+        label = "Box5:Select"
+        boxhead5 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q2 [ label="Q2(F)" ]
+        }
+    }
+    subgraph cluster4 {
+        label = "Box4:Values"
+        boxhead4 [ shape = record, label="{ Distinct: Preserve| ROW 0:  }" ]
+        {
+            rank = same
+        }
+    }
+    subgraph cluster0 {
+        label = "Box0:OuterJoin"
+        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: Q4.C0| 1: Q4.C1| 2: Q6.C0| (Q4.C0 = Q6.C0) }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q6 [ label="Q6(F)" ]
+        }
+    }
+    subgraph cluster7 {
+        label = "Box7:Select"
+        boxhead7 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
+        {
+            rank = same
+            node [ shape = circle ]
+            Q5 [ label="Q5(F)" ]
+        }
+    }
+    subgraph cluster6 {
+        label = "Box6:Values"
+        boxhead6 [ shape = record, label="{ Distinct: Preserve| ROW 0:  }" ]
+        {
+            rank = same
+        }
+    }
+    edge [ arrowhead = none, style = dashed ]
+    Q0 -> boxhead2 [ lhead = cluster2 ]
+    Q4 -> boxhead1 [ lhead = cluster1 ]
+    Q7 -> boxhead0 [ lhead = cluster0 ]
+    Q3 -> boxhead5 [ lhead = cluster5 ]
+    Q2 -> boxhead4 [ lhead = cluster4 ]
+    Q6 -> boxhead7 [ lhead = cluster7 ]
+    Q5 -> boxhead6 [ lhead = cluster6 ]
 }

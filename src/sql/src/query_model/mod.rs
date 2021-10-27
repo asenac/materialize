@@ -379,7 +379,7 @@ pub struct Quantifier {
     pub alias: Option<Ident>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum QuantifierType {
     All,
     Existential,

@@ -8,7 +8,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::query_model::{
-    BoxId, BoxType, DistinctOperation, Expr, Model, QuantifierSet, QuantifierType, QueryBox,
+    BoxId, BoxType, DistinctOperation, Expr, Model, QuantifierId, QuantifierSet, QuantifierType,
+    QueryBox,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
@@ -38,6 +39,7 @@ pub fn rewrite_model(model: &mut Model) {
     let mut rules: Vec<Box<dyn Rule>> = vec![
         Box::new(SelectMerge::new()),
         Box::new(ConstantLifting::new()),
+        Box::new(OuterJoinNormalization::new()),
     ];
 
     apply_rules_to_model(model, &mut rules);
@@ -247,5 +249,86 @@ impl Rule for ConstantLifting {
             });
             Ok(())
         });
+    }
+}
+
+struct OuterJoinNormalization {
+    /// List with all the preserving quantifiers that can be lifted to the
+    /// current box, with the child box they currently belong to.
+    to_lift: Vec<(BoxId, QuantifierId)>,
+}
+
+impl OuterJoinNormalization {
+    fn new() -> Self {
+        Self {
+            to_lift: Vec::new(),
+        }
+    }
+}
+
+impl Rule for OuterJoinNormalization {
+    fn name(&self) -> &'static str {
+        "OuterJoinNormalization"
+    }
+
+    fn rule_type(&self) -> RuleType {
+        RuleType::PreOrder
+    }
+
+    fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
+        self.to_lift.clear();
+        let the_box = model.get_box(box_id).borrow();
+
+        // Collect all preserving quantifiers from OuterJoin boxes hanging from
+        // a Select box
+        if the_box.is_select() {
+            for q_id in the_box.quantifiers.iter() {
+                let q = model.get_quantifier(*q_id).borrow();
+                if let QuantifierType::Foreach = q.quantifier_type {
+                    let input_box = model.get_box(q.input_box).borrow();
+                    // TODO(asenac) clone shared sub-graphs
+                    if input_box.ranging_quantifiers.len() == 1 {
+                        if let BoxType::OuterJoin(_) = &input_box.box_type {
+                            if let Some(preserving_q) = input_box.quantifiers.iter().find(|q| {
+                                model.get_quantifier(**q).borrow().quantifier_type
+                                    == QuantifierType::PreservedForeach
+                            }) {
+                                self.to_lift.push((input_box.id, *preserving_q));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        !self.to_lift.is_empty()
+    }
+
+    fn action(&mut self, model: &mut Model, box_id: BoxId) {
+        loop {
+            let mut the_box = model.get_box(box_id).borrow_mut();
+            for (child_box_id, preserving_q_id) in self.to_lift.iter() {
+                let mut preserving_q = model.get_quantifier(*preserving_q_id).borrow_mut();
+
+                // The preserving quantifier becomes a regular foreach quantifier
+                // in the parent box
+                preserving_q.quantifier_type = QuantifierType::Foreach;
+
+                // Detach the quantifier from the child box
+                let mut child_box = model.get_box(*child_box_id).borrow_mut();
+                child_box.quantifiers.remove(preserving_q_id);
+
+                // ... and attach it to the parent box
+                preserving_q.parent_box = box_id;
+                the_box.quantifiers.insert(*preserving_q_id);
+            }
+            // Release the borrow
+            drop(the_box);
+
+            // The quantifiers lifted may be pointing to outer join boxes
+            // whose preserving quantifiers can be lifted as well.
+            if !self.condition(model, box_id) {
+                break;
+            }
+        }
     }
 }

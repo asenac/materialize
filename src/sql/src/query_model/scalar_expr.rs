@@ -115,6 +115,9 @@ impl Expr {
             }
             Expr::Literal(_, column_type) => column_type.clone(),
             Expr::BaseColumn(base_col) => base_col.column_type.clone(),
+            Expr::CallBinary { func, expr1, expr2 } => {
+                func.output_type(expr1.column_type(model), expr2.column_type(model))
+            }
         }
     }
 

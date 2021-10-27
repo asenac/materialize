@@ -193,6 +193,45 @@ fn test_hir_generator() {
                         .into_iter()
                         .fold("".to_string(), |c, stmt| c + &build_stmt(stmt))
                 }
+
+                "lower" => {
+                    let stmts = match sql_parser::parser::parse_statements(&s.input) {
+                        Ok(stmts) => stmts,
+                        Err(e) => return format!("unable to parse SQL: {}: {}", s.input, e),
+                    };
+
+                    let lower_stmt = |stmt| -> String {
+                        if let sql_parser::ast::Statement::Select(query) = stmt {
+                            let scx = &StatementContext::new(
+                                None,
+                                &catalog,
+                                Rc::new(RefCell::new(BTreeMap::new())),
+                            );
+
+                            let planned_query = match crate::plan::query::plan_root_query(
+                                scx,
+                                query.query,
+                                QueryLifetime::Static,
+                            ) {
+                                Ok(planned_query) => planned_query,
+                                Err(e) => {
+                                    return format!("unable to plan query: {}: {}", s.input, e)
+                                }
+                            };
+
+                            let model =
+                                query_model::hir_generator::FromHir::generate(&planned_query.expr);
+
+                            model.lower().pretty_humanized(&catalog)
+                        } else {
+                            panic!("invalid query: {}", s.input);
+                        }
+                    };
+
+                    stmts
+                        .into_iter()
+                        .fold("".to_string(), |c, stmt| c + &lower_stmt(stmt))
+                }
                 _ => panic!("unknown directive: {}", s.directive),
             }
         })

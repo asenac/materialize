@@ -12,7 +12,7 @@ use std::fmt;
 
 use repr::*;
 
-use crate::query_model::{QuantifierId, QuantifierSet};
+use crate::query_model::{Model, QuantifierId, QuantifierSet};
 
 pub use expr::BinaryFunc;
 
@@ -104,6 +104,20 @@ impl Expr {
         f(self);
     }
 
+    pub fn column_type(&self, model: &Model) -> repr::ColumnType {
+        match &self {
+            Expr::ColumnReference(c) => {
+                let input_box = model.get_quantifier(c.quantifier_id).borrow().input_box;
+                // @todo nullable flag
+                model.get_box(input_box).borrow().columns[c.position]
+                    .expr
+                    .column_type(model)
+            }
+            Expr::Literal(_, column_type) => column_type.clone(),
+            Expr::BaseColumn(base_col) => base_col.column_type.clone(),
+        }
+    }
+
     pub fn collect_column_references_from_context(
         &self,
         context: &QuantifierSet,
@@ -137,4 +151,5 @@ pub struct ColumnReference {
 #[derive(Debug, PartialEq, Clone)]
 pub struct BaseColumn {
     pub position: usize,
+    pub column_type: repr::ColumnType,
 }

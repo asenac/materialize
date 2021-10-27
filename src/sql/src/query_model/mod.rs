@@ -7,13 +7,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use itertools::Itertools;
 use std::cell::RefCell;
 use std::collections::BTreeSet;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 mod dot_generator;
 mod hir_generator;
+mod lowering;
 mod rewrite_engine;
 mod scalar_expr;
 #[cfg(test)]
@@ -324,6 +326,45 @@ impl QueryBox {
 
     fn is_select(&self) -> bool {
         matches!(self.box_type, BoxType::Select(_))
+    }
+
+    fn typ(&self, model: &Model) -> repr::RelationType {
+        let column_types = self
+            .columns
+            .iter()
+            .map(|c| c.expr.column_type(model))
+            .collect_vec();
+        // @todo unique keys
+        repr::RelationType::new(column_types)
+    }
+
+    /// Correlation information of the quantifiers in this box. Returns a map
+    /// containing, for each quantifier, the column references from sibling
+    /// quantifiers they are correlated with.
+    fn correlation_info(&self, model: &Model) -> BTreeMap<QuantifierId, HashSet<ColumnReference>> {
+        let mut correlation_info = BTreeMap::new();
+        for q_id in self.quantifiers.iter() {
+            let mut column_refs = HashSet::new();
+            let mut f = |inner_box: &RefCell<QueryBox>| -> Result<(), ()> {
+                inner_box
+                    .borrow()
+                    .visit_expressions(&mut |expr: &Expr| -> Result<(), ()> {
+                        expr.collect_column_references_from_context(
+                            &self.quantifiers,
+                            &mut column_refs,
+                        );
+                        Ok(())
+                    })
+            };
+            let q = model.get_quantifier(*q_id).borrow();
+            model
+                .visit_pre_boxes_in_subgraph(&mut f, q.input_box)
+                .unwrap();
+            if !column_refs.is_empty() {
+                correlation_info.insert(*q_id, column_refs);
+            }
+        }
+        correlation_info
     }
 }
 

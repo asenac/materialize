@@ -12,7 +12,7 @@ use crate::query_model::{
     QueryBox,
 };
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[allow(dead_code)]
 pub enum RuleType {
@@ -40,6 +40,7 @@ pub fn rewrite_model(model: &mut Model) {
         Box::new(SelectMerge::new()),
         Box::new(ConstantLifting::new()),
         Box::new(OuterJoinNormalization::new()),
+        Box::new(ColumnRemoval::new()),
     ];
 
     apply_rules_to_model(model, &mut rules);
@@ -329,6 +330,106 @@ impl Rule for OuterJoinNormalization {
             if !self.condition(model, box_id) {
                 break;
             }
+        }
+    }
+}
+
+struct ColumnRemoval {
+    new_projection: Option<BTreeMap<usize, usize>>,
+}
+
+impl ColumnRemoval {
+    fn new() -> Self {
+        Self {
+            new_projection: None,
+        }
+    }
+}
+
+impl Rule for ColumnRemoval {
+    fn name(&self) -> &'static str {
+        "ColumnRemoval"
+    }
+
+    fn rule_type(&self) -> RuleType {
+        RuleType::PreOrder
+    }
+
+    fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
+        if model.top_box == box_id {
+            false
+        } else {
+            let the_box = model.get_box(box_id).borrow();
+
+            let mut column_positions = BTreeSet::new();
+
+            for ranging_q_id in the_box.ranging_quantifiers.iter() {
+                let mut column_refs = HashSet::new();
+                let parent_box_id = model.get_quantifier(*ranging_q_id).borrow().parent_box;
+
+                let q_id_as_set: BTreeSet<_> = std::iter::once(*ranging_q_id).collect();
+                // TODO(asenac) avoid descending the ranging quantifier
+                let _ = model.visit_pre_boxes_in_subgraph(
+                    &mut |b| -> Result<(), ()> {
+                        // TODO(asenac) special case for union. except, intersect
+                        b.borrow().visit_expressions(&mut |e| -> Result<(), ()> {
+                            e.collect_column_references_from_context(
+                                &q_id_as_set,
+                                &mut column_refs,
+                            );
+                            Ok(())
+                        })
+                    },
+                    parent_box_id,
+                );
+
+                column_positions.extend(column_refs.iter().map(|c| c.position));
+            }
+
+            if column_positions.len() != the_box.columns.len() {
+                let new_projection = column_positions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (*c, i))
+                    .collect();
+                self.new_projection = Some(new_projection);
+            } else {
+                self.new_projection = None;
+            }
+
+            self.new_projection.is_some()
+        }
+    }
+
+    fn action(&mut self, model: &mut Model, box_id: BoxId) {
+        let new_projection = self.new_projection.as_ref().unwrap();
+        let mut the_box = model.get_box(box_id).borrow_mut();
+        the_box.columns = new_projection
+            .iter()
+            .map(|(c, _)| the_box.columns[*c].clone())
+            .collect();
+        drop(the_box);
+
+        let ranging_quantifiers = model.get_box(box_id).borrow().ranging_quantifiers.clone();
+        for ranging_q_id in ranging_quantifiers.iter() {
+            let parent_box_id = model.get_quantifier(*ranging_q_id).borrow().parent_box;
+
+            let _ = model.visit_pre_boxes_in_subgraph(
+                &mut |b| -> Result<(), ()> {
+                    b.borrow_mut()
+                        .visit_expressions_mut(&mut |e| -> Result<(), ()> {
+                            e.visit_mut(&mut |e| {
+                                if let Expr::ColumnReference(c) = e {
+                                    if c.quantifier_id == *ranging_q_id {
+                                        c.position = new_projection[&c.position];
+                                    }
+                                }
+                            });
+                            Ok(())
+                        })
+                },
+                parent_box_id,
+            );
         }
     }
 }

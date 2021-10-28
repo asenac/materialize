@@ -501,7 +501,7 @@ pub struct Values {
     pub rows: Vec<Vec<Box<Expr>>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Column {
     pub expr: Expr,
     pub alias: Option<Ident>,

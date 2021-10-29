@@ -45,7 +45,7 @@ impl<'a> Lowerer<'a> {
     ) -> expr::MirRelationExpr {
         use expr::MirRelationExpr as SR;
         let the_box = self.model.get_box(box_id).borrow();
-        match &the_box.box_type {
+        let mut input = match &the_box.box_type {
             BoxType::Values(values) => {
                 let identity = SR::constant(vec![vec![]], RelationType::new(vec![]));
                 // TODO(asenac) lower actual values
@@ -109,7 +109,13 @@ impl<'a> Lowerer<'a> {
                 )
             }
             _ => panic!(),
+        };
+
+        if the_box.distinct == DistinctOperation::Enforce {
+            input = input.distinct();
         }
+
+        input
     }
 
     fn lower_join(

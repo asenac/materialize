@@ -82,3 +82,24 @@ select a, b, a from (select 1 as a, 2 as b);
 | Project (#2..#4)
 ----
 ----
+
+lower
+select distinct a, b, a from (select 1 as a, 2 as b);
+----
+----
+%0 = Let l0 =
+| Constant ()
+
+%1 =
+| Constant ()
+
+%2 =
+| Join %0 %1
+| | implementation = Unimplemented
+| Map 1, 2
+| Project (#0, #1)
+| Map #0, #1, #0
+| Project (#2..#4)
+| Distinct group=(#0, #1, #2)
+----
+----

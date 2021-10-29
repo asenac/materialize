@@ -57,7 +57,9 @@ pub fn apply_rules_to_model(model: &mut Model, rules: &mut Vec<Box<dyn Rule>>) {
         apply_rule(&mut **rule, model, model.top_box);
     }
 
-    deep_apply_rules(rules, model, model.top_box, &mut HashSet::new());
+    for _ in 0..5 {
+        deep_apply_rules(rules, model, model.top_box, &mut HashSet::new());
+    }
 }
 
 /// Apply a rewrite rule to a given box within the Model if it matches the condition.

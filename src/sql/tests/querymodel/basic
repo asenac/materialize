@@ -1095,7 +1095,7 @@ digraph G {
     }
     subgraph cluster0 {
         label = "Box0:OuterJoin"
-        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: true| true }" ]
+        boxhead0 [ shape = record, label="{ Distinct: Preserve| true }" ]
         {
             rank = same
             node [ shape = circle ]
@@ -1218,7 +1218,7 @@ digraph G {
     }
     subgraph cluster0 {
         label = "Box0:OuterJoin"
-        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: true| true }" ]
+        boxhead0 [ shape = record, label="{ Distinct: Preserve| true }" ]
         {
             rank = same
             node [ shape = circle ]
@@ -1362,7 +1362,7 @@ digraph G {
     }
     subgraph cluster0 {
         label = "Box0:OuterJoin"
-        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: true| Q5.C0 }" ]
+        boxhead0 [ shape = record, label="{ Distinct: Preserve| Q5.C0 }" ]
         {
             rank = same
             node [ shape = circle ]
@@ -1372,7 +1372,7 @@ digraph G {
     }
     subgraph cluster4 {
         label = "Box4:Select"
-        boxhead4 [ shape = record, label="{ Distinct: Preserve| 0: true }" ]
+        boxhead4 [ shape = record, label="{ Distinct: Preserve }" ]
         {
             rank = same
             node [ shape = circle ]
@@ -1708,7 +1708,7 @@ digraph G {
     }
     subgraph cluster4 {
         label = "Box4:Select"
-        boxhead4 [ shape = record, label="{ Distinct: Enforce| 0: 1 }" ]
+        boxhead4 [ shape = record, label="{ Distinct: Enforce }" ]
         {
             rank = same
             node [ shape = circle ]
@@ -1834,7 +1834,7 @@ digraph G {
     node [ shape = box ]
     subgraph cluster8 {
         label = "Box8:Select"
-        boxhead8 [ shape = record, label="{ Distinct: Preserve| 0: Q4.C0| 1: Q4.C1| 2: Q7.C2 }" ]
+        boxhead8 [ shape = record, label="{ Distinct: Preserve| 0: true| 1: Q4.C1| 2: Q7.C0 }" ]
         {
             rank = same
             node [ shape = circle ]
@@ -1878,7 +1878,7 @@ digraph G {
     }
     subgraph cluster0 {
         label = "Box0:OuterJoin"
-        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: Q4.C0| 1: Q4.C1| 2: Q6.C0| (Q4.C0 = Q6.C0) }" ]
+        boxhead0 [ shape = record, label="{ Distinct: Preserve| 0: Q6.C0| (Q4.C0 = Q6.C0) }" ]
         {
             rank = same
             node [ shape = circle ]
@@ -2004,7 +2004,7 @@ digraph G {
     }
     subgraph cluster4 {
         label = "Box4:Select"
-        boxhead4 [ shape = record, label="{ Distinct: Enforce| 0: 1 }" ]
+        boxhead4 [ shape = record, label="{ Distinct: Enforce }" ]
         {
             rank = same
             node [ shape = circle ]

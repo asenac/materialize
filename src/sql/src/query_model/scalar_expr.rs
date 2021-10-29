@@ -62,24 +62,60 @@ impl fmt::Display for Expr {
 }
 
 impl Expr {
-    // @todo use a generic visit method
+    pub fn visit1<'a, F>(&'a self, mut f: F)
+    where
+        F: FnMut(&'a Self),
+    {
+        match self {
+            Expr::ColumnReference(_) | Expr::BaseColumn(_) | Expr::Literal(_, _) => (),
+            Expr::CallBinary { expr1, expr2, .. } => {
+                f(expr1);
+                f(expr2);
+            }
+        }
+    }
+
+    pub fn visit<'a, F>(&'a self, f: &mut F)
+    where
+        F: FnMut(&'a Self),
+    {
+        self.visit1(|e| e.visit(f));
+        f(self);
+    }
+
+    pub fn visit1_mut<'a, F>(&'a mut self, mut f: F)
+    where
+        F: FnMut(&'a mut Self),
+    {
+        match self {
+            Expr::ColumnReference(_) | Expr::BaseColumn(_) | Expr::Literal(_, _) => (),
+            Expr::CallBinary { expr1, expr2, .. } => {
+                f(expr1);
+                f(expr2);
+            }
+        }
+    }
+
+    pub fn visit_mut<F>(&mut self, f: &mut F)
+    where
+        F: FnMut(&mut Self),
+    {
+        self.visit1_mut(|e| e.visit_mut(f));
+        f(self);
+    }
+
     pub fn collect_column_references_from_context(
         &self,
         context: &QuantifierSet,
         column_refs: &mut HashSet<ColumnReference>,
     ) {
-        match &self {
-            Expr::ColumnReference(c) => {
+        self.visit(&mut |e| {
+            if let Expr::ColumnReference(c) = e {
                 if context.contains(&c.quantifier_id) {
                     column_refs.insert(c.clone());
                 }
             }
-            Expr::CallBinary { expr1, expr2, .. } => {
-                expr1.collect_column_references_from_context(context, column_refs);
-                expr2.collect_column_references_from_context(context, column_refs);
-            }
-            Expr::Literal(..) | Expr::BaseColumn(_) => {}
-        }
+        });
     }
 }
 

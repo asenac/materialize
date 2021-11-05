@@ -231,8 +231,13 @@ impl HirRelationExpr {
                     for scalar in scalars {
                         let scalar =
                             scalar.applied_to(id_gen, col_map, &mut input, &Some(&subquery_map));
-                        input = input.map(vec![scalar]);
-                        scalar_columns.push(input.arity() - 1);
+                        match scalar {
+                            expr::MirScalarExpr::Column(c) => scalar_columns.push(c),
+                            _ => {
+                                input = input.map(vec![scalar]);
+                                scalar_columns.push(input.arity() - 1);
+                            }
+                        }
                     }
 
                     // Discard any new columns added by the lowering of the scalar expressions

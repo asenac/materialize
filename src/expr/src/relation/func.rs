@@ -761,15 +761,15 @@ impl AggregateFunc {
                     element_type: Box::new(ScalarType::Record {
                         fields: vec![
                             (
-                                ColumnName::from("?column?"),
+                                ColumnName::from("?row_number?"),
                                 ScalarType::Int64.nullable(false),
                             ),
-                            (ColumnName::from("?column?"), {
+                            (ColumnName::from("?record?"), {
                                 let inner = match &fields[0].1.scalar_type {
                                     ScalarType::List { element_type, .. } => element_type.clone(),
                                     _ => unreachable!(),
                                 };
-                                inner.nullable(true)
+                                inner.nullable(false)
                             }),
                         ],
                         custom_oid: None,

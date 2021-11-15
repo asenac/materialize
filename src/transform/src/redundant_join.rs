@@ -216,11 +216,10 @@ impl RedundantJoin {
             MirRelationExpr::Map { input, scalars } => {
                 let mut result = self.action(input, lets);
                 for prov in result.iter_mut() {
-                    let dereferenced_scalars = scalars
-                        .iter()
-                        .map(|scalar| prov.dereference(scalar))
-                        .collect_vec();
-                    prov.dereferenced_projection.extend(dereferenced_scalars);
+                    for scalar in scalars.iter() {
+                        let dereferenced_scalar = prov.dereference(scalar);
+                        prov.dereferenced_projection.push(dereferenced_scalar);
+                    }
                 }
                 result
             }

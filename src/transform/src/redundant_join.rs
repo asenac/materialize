@@ -376,17 +376,12 @@ impl ProvInfo {
                     None
                 }
             }
-            MirScalarExpr::CallVariadic { func, exprs } => {
-                let new_exprs = exprs.iter().flat_map(|e| self.dereference(e)).collect_vec();
-                if new_exprs.len() == exprs.len() {
-                    Some(MirScalarExpr::CallVariadic {
-                        func: func.clone(),
-                        exprs: new_exprs,
-                    })
-                } else {
-                    None
-                }
-            }
+            MirScalarExpr::CallUnary { func, expr } => self.dereference(expr).and_then(|expr| {
+                Some(MirScalarExpr::CallUnary {
+                    func: func.clone(),
+                    expr: Box::new(expr),
+                })
+            }),
             MirScalarExpr::CallBinary { func, expr1, expr2 } => {
                 self.dereference(expr1).and_then(|expr1| {
                     self.dereference(expr2).and_then(|expr2| {
@@ -398,9 +393,29 @@ impl ProvInfo {
                     })
                 })
             }
-            MirScalarExpr::Literal(..) => Some(expr.clone()),
-            // @todo
-            _ => None,
+            MirScalarExpr::CallVariadic { func, exprs } => {
+                let new_exprs = exprs.iter().flat_map(|e| self.dereference(e)).collect_vec();
+                if new_exprs.len() == exprs.len() {
+                    Some(MirScalarExpr::CallVariadic {
+                        func: func.clone(),
+                        exprs: new_exprs,
+                    })
+                } else {
+                    None
+                }
+            }
+            MirScalarExpr::Literal(..) | MirScalarExpr::CallNullary(..) => Some(expr.clone()),
+            MirScalarExpr::If { cond, then, els } => self.dereference(cond).and_then(|cond| {
+                self.dereference(then).and_then(|then| {
+                    self.dereference(els).and_then(|els| {
+                        Some(MirScalarExpr::If {
+                            cond: Box::new(cond),
+                            then: Box::new(then),
+                            els: Box::new(els),
+                        })
+                    })
+                })
+            }),
         }
     }
 

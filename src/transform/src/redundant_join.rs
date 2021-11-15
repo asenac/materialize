@@ -227,21 +227,20 @@ impl RedundantJoin {
             MirRelationExpr::DeclareKeys { input, .. } => self.action(input, lets),
 
             MirRelationExpr::Union { base, inputs } => {
-                let mut _prov = self.action(base, lets);
+                let mut prov = self.action(base, lets);
                 for input in inputs {
-                    let _input_prov = self.action(input, lets);
-                    //     // To merge a new list of provenances, we look at the cross
-                    //     // produce of things we might know about each source.
-                    //     // TODO(mcsherry): this can be optimized to use datastructures
-                    //     // keyed by the source identifier.
-                    //     let mut new_prov = Vec::new();
-                    //     for l in prov {
-                    //         new_prov.extend(input_prov.iter().flat_map(|r| l.meet(r)))
-                    //     }
-                    //     prov = new_prov;
+                    let input_prov = self.action(input, lets);
+                    // To merge a new list of provenances, we look at the cross
+                    // produce of things we might know about each source.
+                    // TODO(mcsherry): this can be optimized to use datastructures
+                    // keyed by the source identifier.
+                    let mut new_prov = Vec::new();
+                    for l in prov {
+                        new_prov.extend(input_prov.iter().flat_map(|r| l.meet(r)))
+                    }
+                    prov = new_prov;
                 }
-                // prov
-                Vec::new()
+                prov
             }
 
             MirRelationExpr::Constant { .. } => Vec::new(),
@@ -365,6 +364,9 @@ impl ProvInfo {
         }
     }
 
+    /// Given an expression on top of the projection of the current operator
+    /// it returns an equivalen expression as if it was right on top of the
+    /// underlying Get operator.
     fn dereference(&self, expr: &MirScalarExpr) -> Option<MirScalarExpr> {
         match expr {
             MirScalarExpr::Column(c) => {
@@ -402,25 +404,32 @@ impl ProvInfo {
         }
     }
 
-    // /// Merge two constraints to find a constraint that satisfies both inputs.
-    // ///
-    // /// This method returns nothing if no columns are in common (either because
-    // /// difference sources are identified, or just no columns in common) and it
-    // /// intersects bindings and the `exact` bit.
-    // fn meet(&self, other: &Self) -> Option<Self> {
-    //     if self.id == other.id {
-    //         let mut result = self.clone();
-    //         result.binding.retain(|b| other.binding.contains(b));
-    //         result.exact &= other.exact;
-    //         if !result.binding.is_empty() {
-    //             Some(result)
-    //         } else {
-    //             None
-    //         }
-    //     } else {
-    //         None
-    //     }
-    // }
+    /// Merge two constraints to find a constraint that satisfies both inputs.
+    ///
+    /// This method returns nothing if no columns are in common (either because
+    /// difference sources are identified, or just no columns in common) and it
+    /// intersects bindings and the `exact` bit.
+    fn meet(&self, other: &Self) -> Option<Self> {
+        if self.id == other.id {
+            let resulting_projection = self
+                .dereferenced_projection
+                .iter()
+                .zip(other.dereferenced_projection.iter())
+                .map(|(e1, e2)| if e1 == e2 { e1.clone() } else { None })
+                .collect_vec();
+            if !resulting_projection.iter().any(|e| e.is_some()) {
+                Some(ProvInfo {
+                    id: self.id,
+                    dereferenced_projection: resulting_projection,
+                    exact: self.exact && other.exact,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 }
 
 /// Attempts to find column bindings that make `input` redundant.

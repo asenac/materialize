@@ -457,12 +457,17 @@ fn find_redundancy(
             // examine all *other* inputs that have not been removed...
             for other in (0..input_mapper.total_inputs()).filter(|other| other != &input) {
                 for other_prov in input_prov[other].iter().filter(|p| p.id == provenance.id) {
-                    // True iff `col = binding[col]` is in `equivalences` for all `col` in `cols`.
+                    // The root expression behind the key column, ie. the expression
+                    // re-written in terms of elements in the projection of the Get
+                    // operator.
                     let all_columns_equated = |cols: &Vec<usize>| {
                         cols.iter().all(|input_col| {
                             let root_expr =
                                 provenance.dereference(&MirScalarExpr::column(*input_col));
                             if root_expr.is_some() {
+                                // Check if there is a join equivalence that joins 'input' and
+                                // 'other' on expressions that lead to the same root expression
+                                // as the key column.
                                 equivalences.iter().any(|e| {
                                     e.iter().any(|e| {
                                         Some(input) == input_mapper.single_input(e)
@@ -483,11 +488,15 @@ fn find_redundancy(
                     };
 
                     if keys.iter().any(|key| all_columns_equated(key)) {
+                        // Find out whether we can produce input's projection strictly with
+                        // elements in other's projection.
                         let expressions = provenance
                             .dereferenced_projection
                             .iter()
                             .enumerate()
                             .flat_map(|(c, _)| {
+                                // Check if input's 'c' column can be replaced with an expression
+                                // on 'other' via join equivalences.
                                 if let Some(expr) = input_mapper.try_map_to_input_with_bound_expr(
                                     input_mapper
                                         .map_expr_to_global(MirScalarExpr::Column(c), input),
@@ -498,6 +507,9 @@ fn find_redundancy(
                                 }
                                 // Check if 'other' has a column that leads to the same root
                                 // expression as input's 'c' column.
+                                // TODO(asenac) This could be generalized so that we try to
+                                // built the expression under input's 'c' column with elements
+                                // in other's projection.
                                 let input_col = MirScalarExpr::Column(c);
                                 if let Some(root_expr) = provenance.dereference(&input_col) {
                                     for other_col in 0..other_prov.dereferenced_projection.len() {

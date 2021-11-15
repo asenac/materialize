@@ -80,11 +80,7 @@ impl RedundantJoin {
                 // Extract the value provenance, or an empty list if unavailable.
                 let mut val_info = lets.get(id).cloned().unwrap_or_default();
                 // Add information about being exactly this let binding too.
-                val_info.push(ProvInfo {
-                    id: *id,
-                    dereference_tree: DereferenceTree::make_leaf(typ.arity()),
-                    exact: true,
-                });
+                val_info.push(ProvInfo::make_leaf(*id, typ.arity()));
                 val_info
             }
 
@@ -197,12 +193,10 @@ impl RedundantJoin {
                             for (local_col, global_col) in
                                 old_input_mapper.global_columns(input).enumerate()
                             {
-                                projection[global_col] = Some(MirScalarExpr::column(local_col));
+                                projection[global_col] =
+                                    prov.dereferenced_projection[local_col].clone();
                             }
-                            prov.dereference_tree = DereferenceTree {
-                                projection,
-                                input: Some(Box::new(prov.dereference_tree.to_owned())),
-                            };
+                            prov.dereferenced_projection = projection;
                             results.push(prov);
                         }
                     }
@@ -222,30 +216,11 @@ impl RedundantJoin {
             MirRelationExpr::Map { input, scalars } => {
                 let mut result = self.action(input, lets);
                 for prov in result.iter_mut() {
-                    for scalar in scalars.iter() {
-                        let mut projection = prov
-                            .dereference_tree
-                            .projection
-                            .iter()
-                            .enumerate()
-                            .map(|(c, p)| {
-                                if p.is_some() {
-                                    Some(MirScalarExpr::column(c))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect_vec();
-                        if let Some(_) = prov.dereference_tree.dereference(scalar) {
-                            projection.push(Some(scalar.clone()));
-                        } else {
-                            projection.push(None);
-                        }
-                        prov.dereference_tree = DereferenceTree {
-                            projection,
-                            input: Some(Box::new(prov.dereference_tree.to_owned())),
-                        };
-                    }
+                    let dereferenced_scalars = scalars
+                        .iter()
+                        .map(|scalar| prov.dereference(scalar))
+                        .collect_vec();
+                    prov.dereferenced_projection.extend(dereferenced_scalars);
                 }
                 result
             }
@@ -281,19 +256,12 @@ impl RedundantJoin {
                 // all key tuples that were present in its input.
                 let mut result = self.action(input, lets);
                 for prov in result.iter_mut() {
-                    let mut projection = Vec::new();
-                    for key in group_key.iter() {
-                        if let Some(_) = prov.dereference_tree.dereference(key) {
-                            projection.push(Some(key.clone()));
-                        } else {
-                            projection.push(None);
-                        }
-                    }
+                    let mut projection = group_key
+                        .iter()
+                        .map(|key| prov.dereference(key))
+                        .collect_vec();
                     projection.extend((0..aggregates.len()).map(|_| None));
-                    prov.dereference_tree = DereferenceTree {
-                        projection,
-                        input: Some(Box::new(prov.dereference_tree.to_owned())),
-                    };
+                    prov.dereferenced_projection = projection;
                 }
                 // TODO: For min, max aggregates, we could preserve provenance
                 // if the expression references a column. We would need to un-set
@@ -325,19 +293,11 @@ impl RedundantJoin {
                 // but they neither drop rows nor invent values.
                 let mut result = self.action(input, lets);
                 for prov in result.iter_mut() {
-                    let mut projection = Vec::new();
-                    for c in outputs.iter() {
-                        let scalar = MirScalarExpr::Column(*c);
-                        if let Some(_) = prov.dereference_tree.dereference(&scalar) {
-                            projection.push(Some(scalar));
-                        } else {
-                            projection.push(None);
-                        }
-                    }
-                    prov.dereference_tree = DereferenceTree {
-                        projection,
-                        input: Some(Box::new(prov.dereference_tree.to_owned())),
-                    };
+                    let projection = outputs
+                        .iter()
+                        .map(|c| prov.dereference(&MirScalarExpr::Column(*c)))
+                        .collect_vec();
+                    prov.dereferenced_projection = projection;
                 }
                 result
             }
@@ -347,8 +307,7 @@ impl RedundantJoin {
                 let mut result = self.action(input, lets);
                 for prov in result.iter_mut() {
                     prov.exact = false;
-                    prov.dereference_tree
-                        .projection
+                    prov.dereferenced_projection
                         .extend((0..func.output_type().column_types.len()).map(|_| None));
                 }
                 result
@@ -386,71 +345,63 @@ impl RedundantJoin {
 pub struct ProvInfo {
     // The Id (local or global) of the source.
     id: Id,
-    dereference_tree: DereferenceTree,
+    // The projection of the current operator written in terms of the columns
+    // projected by the underlying Get operator.
+    dereferenced_projection: Vec<Option<MirScalarExpr>>,
     // If true, all distinct projected source rows are present in the rows of
     // the projection of the current collection. This constraint is lost as soon
     // as a transformation may drop records.
     exact: bool,
 }
 
-#[derive(Clone, Debug, Ord, Eq, PartialOrd, PartialEq)]
-struct DereferenceTree {
-    projection: Vec<Option<MirScalarExpr>>,
-    input: Option<Box<DereferenceTree>>,
-}
-
-impl DereferenceTree {
-    fn make_leaf(arity: usize) -> Self {
+impl ProvInfo {
+    fn make_leaf(id: Id, arity: usize) -> Self {
         Self {
-            projection: (0..arity)
+            id,
+            dereferenced_projection: (0..arity)
                 .map(|c| Some(MirScalarExpr::column(c)))
                 .collect::<Vec<_>>(),
-            input: None,
+            exact: true,
         }
     }
+
     fn dereference(&self, expr: &MirScalarExpr) -> Option<MirScalarExpr> {
-        if self.input.is_none() {
-            Some(expr.clone())
-        } else {
-            match expr {
-                MirScalarExpr::Column(c) => {
-                    if let Some(expr) = &self.projection[*c] {
-                        self.input.as_ref().unwrap().dereference(&expr)
-                    } else {
-                        None
-                    }
+        match expr {
+            MirScalarExpr::Column(c) => {
+                if let Some(expr) = &self.dereferenced_projection[*c] {
+                    Some(expr.clone())
+                } else {
+                    None
                 }
-                MirScalarExpr::CallVariadic { func, exprs } => {
-                    let new_exprs = exprs.iter().flat_map(|e| self.dereference(e)).collect_vec();
-                    if new_exprs.len() == exprs.len() {
-                        Some(MirScalarExpr::CallVariadic {
+            }
+            MirScalarExpr::CallVariadic { func, exprs } => {
+                let new_exprs = exprs.iter().flat_map(|e| self.dereference(e)).collect_vec();
+                if new_exprs.len() == exprs.len() {
+                    Some(MirScalarExpr::CallVariadic {
+                        func: func.clone(),
+                        exprs: new_exprs,
+                    })
+                } else {
+                    None
+                }
+            }
+            MirScalarExpr::CallBinary { func, expr1, expr2 } => {
+                self.dereference(expr1).and_then(|expr1| {
+                    self.dereference(expr2).and_then(|expr2| {
+                        Some(MirScalarExpr::CallBinary {
                             func: func.clone(),
-                            exprs: new_exprs,
-                        })
-                    } else {
-                        None
-                    }
-                }
-                MirScalarExpr::CallBinary { func, expr1, expr2 } => {
-                    self.dereference(expr1).and_then(|expr1| {
-                        self.dereference(expr2).and_then(|expr2| {
-                            Some(MirScalarExpr::CallBinary {
-                                func: func.clone(),
-                                expr1: Box::new(expr1),
-                                expr2: Box::new(expr2),
-                            })
+                            expr1: Box::new(expr1),
+                            expr2: Box::new(expr2),
                         })
                     })
-                }
-                MirScalarExpr::Literal(..) => Some(expr.clone()),
-                // @todo
-                _ => None,
+                })
             }
+            MirScalarExpr::Literal(..) => Some(expr.clone()),
+            // @todo
+            _ => None,
         }
     }
-}
 
-impl ProvInfo {
     // /// Merge two constraints to find a constraint that satisfies both inputs.
     // ///
     // /// This method returns nothing if no columns are in common (either because
@@ -500,19 +451,18 @@ fn find_redundancy(
                     // True iff `col = binding[col]` is in `equivalences` for all `col` in `cols`.
                     let all_columns_equated = |cols: &Vec<usize>| {
                         cols.iter().all(|input_col| {
-                            let root_expr = provenance
-                                .dereference_tree
-                                .dereference(&MirScalarExpr::column(*input_col));
+                            let root_expr =
+                                provenance.dereference(&MirScalarExpr::column(*input_col));
                             if root_expr.is_some() {
                                 equivalences.iter().any(|e| {
                                     e.iter().any(|e| {
                                         Some(input) == input_mapper.single_input(e)
-                                            && provenance.dereference_tree.dereference(
+                                            && provenance.dereference(
                                                 &input_mapper.map_expr_to_local(e.clone()),
                                             ) == root_expr
                                     }) && e.iter().any(|e| {
                                         Some(other) == input_mapper.single_input(e)
-                                            && other_prov.dereference_tree.dereference(
+                                            && other_prov.dereference(
                                                 &input_mapper.map_expr_to_local(e.clone()),
                                             ) == root_expr
                                     })
@@ -525,8 +475,7 @@ fn find_redundancy(
 
                     if keys.iter().any(|key| all_columns_equated(key)) {
                         let expressions = provenance
-                            .dereference_tree
-                            .projection
+                            .dereferenced_projection
                             .iter()
                             .enumerate()
                             .flat_map(|(c, _)| {
@@ -541,15 +490,10 @@ fn find_redundancy(
                                 // Check if 'other' has a column that leads to the same root
                                 // expression as input's 'c' column.
                                 let input_col = MirScalarExpr::Column(c);
-                                if let Some(root_expr) =
-                                    provenance.dereference_tree.dereference(&input_col)
-                                {
-                                    for other_col in 0..other_prov.dereference_tree.projection.len()
-                                    {
+                                if let Some(root_expr) = provenance.dereference(&input_col) {
+                                    for other_col in 0..other_prov.dereferenced_projection.len() {
                                         let col_expr = MirScalarExpr::Column(other_col);
-                                        if let Some(derefed) =
-                                            other_prov.dereference_tree.dereference(&col_expr)
-                                        {
+                                        if let Some(derefed) = other_prov.dereference(&col_expr) {
                                             if derefed == root_expr {
                                                 return Some(
                                                     input_mapper
@@ -562,7 +506,7 @@ fn find_redundancy(
                                 None
                             })
                             .collect_vec();
-                        if expressions.len() == provenance.dereference_tree.projection.len() {
+                        if expressions.len() == provenance.dereferenced_projection.len() {
                             return Some(expressions);
                         }
                     }

@@ -26,9 +26,9 @@ build apply=PredicateKnowledge
 predicate-propagation
 (filter (project (constant [[null]] [int64]) [#0 #0]) [(call_binary eq #0 #1)])
 ----
+Equivalence[#0 #1]
 false
 !(isnull(#0))
-(#0 = #1)
 
 build apply=PredicateKnowledge
 (filter (project (get x) [#0 #0]) [(call_binary eq #0 #1)])
@@ -208,8 +208,8 @@ build apply=PredicateKnowledge
 predicate-propagation
 (map (union [(project (get x) [#0 #0]) (get x) (project (get x) [#0 #0])]) [#1 (call_binary add_int32 #1 1)])
 ----
-(#1 = #2)
-(#3 = (#1 + 1))
+Equivalence[#1 #2]
+Equivalence[#3 (#1 + 1)]
 
 # FlatMap
 
@@ -378,10 +378,9 @@ build apply=PredicateKnowledge
 predicate-propagation
 (join [(get x) (get x)] [[#0 #2 (1 int32)] [(call_binary sub_int32 #2 (1 int32)) #1]])
 ----
+Equivalence[0 #1]
+Equivalence[1 #0 #2]
 !(isnull(#3))
-(0 = #1)
-(1 = #0)
-(1 = #2)
 
 #
 # Check that normalization doesn't return more predicates when it's fed with its own output.
@@ -390,83 +389,81 @@ predicate-propagation
 predicate-propagation
 (filter (get x) [(call_binary eq #0 (call_binary add_int32 #0 #1))])
 ----
+Equivalence[#0 (#0 + #1)]
 !(isnull(#0))
 !(isnull(#1))
-(#0 = (#0 + #1))
 
 predicate-propagation
 (project (filter (get x) [(call_binary eq #0 (call_binary add_int32 #0 #1))]) [0 1])
 ----
+Equivalence[#0 (#0 + #1)]
 !(isnull(#0))
 !(isnull(#1))
-(#0 = (#0 + #1))
 
 predicate-propagation
 (filter (get x) [(call_binary eq #0 (call_binary add_int32 #0 #1)) (call_binary eq #0 #1)])
 ----
+Equivalence[#0 #1 (#0 + #1)]
 !(isnull(#0))
-(#0 = #1)
-(#0 = (#0 + #1))
 
 predicate-propagation
 (project (filter (get x) [(call_binary eq #0 (call_binary add_int32 #0 #1)) (call_binary eq #0 #1)]) [0 1])
 ----
+Equivalence[#0 #1 (#0 + #1)]
 !(isnull(#0))
-(#0 = #1)
-(#0 = (#0 + #1))
 
 predicate-propagation
 (filter (get x) [(call_binary eq (call_binary add_int32 #0 #1) (call_binary mul_int32 10 (call_binary add_int32 #0 #1)))])
 ----
+Equivalence[(#0 + #1) (10 * (#0 + #1))]
 !(isnull(#0))
 !(isnull(#1))
-((#0 + #1) = (10 * (#0 + #1)))
 
 predicate-propagation
 (project (filter (get x) [(call_binary eq (call_binary add_int32 #0 #1) (call_binary mul_int32 10 (call_binary add_int32 #0 #1)))]) [0 1])
 ----
+Equivalence[(#0 + #1) (10 * (#0 + #1))]
 !(isnull(#0))
 !(isnull(#1))
-((#0 + #1) = (10 * (#0 + #1)))
 
 predicate-propagation
 (join [(get x) (get x)] [[#0 #2] [(call_binary add_int32 #0 1) (call_binary add_int32 #2 1)] [(call_binary add_int32 (call_binary add_int32 #0 1) 1) (call_binary add_int32 (call_binary add_int32 #2 1) 1)]])
 ----
+Equivalence[#0 #2]
 !(isnull(#1))
 !(isnull(#3))
-(#0 = #2)
 
 predicate-propagation
 (project (join [(get x) (get x)] [[#0 #2] [(call_binary add_int32 #0 1) (call_binary add_int32 #2 1)] [(call_binary add_int32 (call_binary add_int32 #0 1) 1) (call_binary add_int32 (call_binary add_int32 #2 1) 1)]]) [0 1 2 3])
 ----
+Equivalence[#0 #2]
 !(isnull(#1))
 !(isnull(#3))
-(#0 = #2)
 
 predicate-propagation
 (join [(get x) (get x)] [[(call_binary add_int32 #0 1) (call_binary add_int32 #2 1)] [(call_binary add_int32 (call_binary add_int32 #0 1) 1) (call_binary add_int32 (call_binary add_int32 #2 1) 1)] [#0 #2] ])
 ----
+Equivalence[#0 #2]
 !(isnull(#1))
 !(isnull(#3))
-(#0 = #2)
 
 predicate-propagation
 (project (join [(get x) (get x)] [[(call_binary add_int32 #0 1) (call_binary add_int32 #2 1)] [(call_binary add_int32 (call_binary add_int32 #0 1) 1) (call_binary add_int32 (call_binary add_int32 #2 1) 1)] [#0 #2] ]) [0 1 2 3])
 ----
+Equivalence[#0 #2]
 !(isnull(#1))
 !(isnull(#3))
-(#0 = #2)
 
 predicate-propagation
 (join [(get x) (get x)] [[(call_binary add_int32 (call_binary add_int32 #0 1) 1) (call_binary add_int32 (call_binary add_int32 #2 1) 1)] [(call_binary add_int32 #0 1) (call_binary add_int32 #2 1)] [#0 #2] ])
 ----
+Equivalence[#0 #2]
 !(isnull(#1))
 !(isnull(#3))
-(#0 = #2)
 
 predicate-propagation
 (project (join [(get x) (get x)] [[(call_binary add_int32 (call_binary add_int32 #0 1) 1) (call_binary add_int32 (call_binary add_int32 #2 1) 1)] [(call_binary add_int32 #0 1) (call_binary add_int32 #2 1)] [#0 #2] ]) [0 1 2 3])
 ----
+Equivalence[#0 #2]
 !(isnull(#1))
 !(isnull(#3))
-(#0 = #2)

@@ -28,6 +28,7 @@ use crate::TransformArgs;
 use expr::{
     BinaryFunc, JoinInputMapper, MirRelationExpr, MirScalarExpr, UnaryFunc, RECURSION_LIMIT,
 };
+use itertools::Itertools;
 use ore::stack::{CheckedRecursion, RecursionGuard};
 use repr::Datum;
 use repr::ScalarType;
@@ -63,6 +64,109 @@ impl crate::Transform for PredicateKnowledge {
     }
 }
 
+/// Models a constraint.
+///
+/// Used to lift knowledge through the relation graph.
+#[derive(PartialOrd, Ord, PartialEq, Eq, Clone, Debug)]
+pub enum Constraint {
+    /// Represents a value equivalence, rather than a SQL equality.
+    Equivalence(Vec<MirScalarExpr>),
+    /// A constraint expressed as an expression.
+    Predicate(MirScalarExpr),
+}
+
+impl Constraint {
+    fn support(&self) -> HashSet<usize> {
+        match self {
+            Self::Equivalence(class) => {
+                class
+                    .iter()
+                    .map(|e| e.support())
+                    .fold(Default::default(), |mut acc, support| {
+                        acc.extend(support);
+                        acc
+                    })
+            }
+            Self::Predicate(p) => p.support(),
+        }
+    }
+
+    fn permute_map(&mut self, permutation: &HashMap<usize, usize>) {
+        match self {
+            Self::Equivalence(class) => {
+                for expr in class.iter_mut() {
+                    expr.permute_map(permutation);
+                }
+            }
+            Self::Predicate(p) => p.permute_map(permutation),
+        }
+    }
+
+    fn is_literal_true(&self) -> bool {
+        if let Self::Predicate(p) = self {
+            p.is_literal_true()
+        } else {
+            false
+        }
+    }
+
+    fn is_literal_false(&self) -> bool {
+        if let Self::Predicate(p) = self {
+            p.is_literal_false()
+        } else {
+            false
+        }
+    }
+
+    fn is_literal_null(&self) -> bool {
+        if let Self::Predicate(p) = self {
+            p.is_literal_null()
+        } else {
+            false
+        }
+    }
+
+    /// Simplifies all the expressions within the Constraint.
+    fn reduce(&mut self, relation_type: &repr::RelationType) {
+        match self {
+            Self::Equivalence(class) => {
+                for expr in class.iter_mut() {
+                    expr.reduce(relation_type);
+                }
+            }
+            Self::Predicate(p) => p.reduce(relation_type),
+        }
+    }
+
+    /// Maps all the expressions within the Constraint.
+    fn map_to_global(self, input_mapper: &JoinInputMapper, index: usize) -> Self {
+        match self {
+            Self::Equivalence(class) => Self::Equivalence(
+                class
+                    .into_iter()
+                    .map(|e| input_mapper.map_expr_to_global(e, index))
+                    .collect_vec(),
+            ),
+            Self::Predicate(p) => Self::Predicate(input_mapper.map_expr_to_global(p, index)),
+        }
+    }
+}
+
+impl std::fmt::Display for Constraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        match self {
+            Self::Equivalence(class) => {
+                write!(f, "Equivalence[")?;
+                for (index, expr) in class.iter().enumerate() {
+                    write!(f, "{}{}", if index > 0 { " " } else { "" }, expr)?;
+                }
+                write!(f, "]")
+            }
+            Self::Predicate(p) => p.fmt(f),
+        }
+    }
+}
+
 impl PredicateKnowledge {
     /// Harvest predicates known to be true of the columns in scope.
     ///
@@ -74,8 +178,8 @@ impl PredicateKnowledge {
     pub fn action(
         &self,
         expr: &mut MirRelationExpr,
-        let_knowledge: &mut HashMap<expr::Id, Vec<MirScalarExpr>>,
-    ) -> Result<Vec<MirScalarExpr>, crate::TransformError> {
+        let_knowledge: &mut HashMap<expr::Id, Vec<Constraint>>,
+    ) -> Result<Vec<Constraint>, crate::TransformError> {
         self.checked_recur(|_| {
             let self_type = expr.typ();
             let mut predicates = match expr {
@@ -108,32 +212,32 @@ impl PredicateKnowledge {
                             }
                         }
                         // Load up a return predicate list with everything we have learned.
-                        let mut predicates = Vec::new();
+                        let mut predicates: Vec<Constraint> = Vec::new();
                         for column in 0..literal.len() {
                             if let Some(datum) = literal[column] {
                                 // Having found a literal, if it is Null use `IsNull` and otherwise use `Eq`.
                                 if datum == Datum::Null {
-                                    predicates.push(
+                                    predicates.push(Constraint::Predicate(
                                         MirScalarExpr::Column(column).call_unary(
                                             expr::UnaryFunc::IsNull(expr::func::IsNull),
                                         ),
-                                    );
+                                    ));
                                 } else {
-                                    predicates.push(MirScalarExpr::Column(column).call_binary(
+                                    predicates.push(Constraint::Equivalence(vec![
+                                        MirScalarExpr::Column(column),
                                         MirScalarExpr::literal(
                                             Ok(datum),
                                             typ.column_types[column].scalar_type.clone(),
                                         ),
-                                        expr::BinaryFunc::Eq,
-                                    ));
+                                    ]));
                                 }
                             }
                             if non_null[column] {
-                                predicates.push(
+                                predicates.push(Constraint::Predicate(
                                     MirScalarExpr::column(column)
                                         .call_unary(UnaryFunc::IsNull(expr::func::IsNull))
                                         .call_unary(UnaryFunc::Not(expr::func::Not)),
-                                );
+                                ));
                             }
                         }
                         predicates
@@ -181,12 +285,10 @@ impl PredicateKnowledge {
                     // 3. add equivalence constraints for repeated columns.
                     for (index, column) in outputs.iter().enumerate() {
                         if remap[column] != index {
-                            input_knowledge.push(
-                                MirScalarExpr::Column(remap[column]).call_binary(
-                                    MirScalarExpr::Column(index),
-                                    expr::BinaryFunc::Eq,
-                                ),
-                            );
+                            input_knowledge.push(Constraint::Equivalence(vec![
+                                MirScalarExpr::Column(remap[column]),
+                                MirScalarExpr::Column(index),
+                            ]));
                         }
                     }
                     input_knowledge
@@ -199,10 +301,10 @@ impl PredicateKnowledge {
                     // Scalars could be simplified based on known predicates.
                     for (index, scalar) in scalars.iter_mut().enumerate() {
                         optimize(scalar, &structured);
-                        output_knowledge.push(
-                            MirScalarExpr::Column(input_arity + index)
-                                .call_binary(scalar.clone(), expr::BinaryFunc::Eq),
-                        );
+                        output_knowledge.push(Constraint::Equivalence(vec![
+                            MirScalarExpr::Column(input_arity + index),
+                            scalar.clone(),
+                        ]));
                     }
                     output_knowledge
                 }
@@ -225,7 +327,7 @@ impl PredicateKnowledge {
 
                     for predicate in predicates.iter_mut() {
                         optimize(predicate, &structured);
-                        output_knowledge.push(predicate.clone());
+                        append_constraint(&mut output_knowledge, predicate.clone());
                     }
                     output_knowledge
                 }
@@ -241,7 +343,7 @@ impl PredicateKnowledge {
                     // Collect input knowledge, but update column references.
                     for (input_idx, input) in inputs.iter_mut().enumerate() {
                         for predicate in self.action(input, let_knowledge)? {
-                            knowledge.push(input_mapper.map_expr_to_global(predicate, input_idx));
+                            knowledge.push(predicate.map_to_global(&input_mapper, input_idx));
                         }
                     }
 
@@ -253,16 +355,10 @@ impl PredicateKnowledge {
                             optimize(expr, &structured);
                         }
 
-                        if let Some(first) = equivalence.get(0) {
-                            for other in equivalence[1..].iter() {
-                                new_predicates
-                                    .push(first.clone().call_binary(other.clone(), BinaryFunc::Eq));
-                            }
-                        }
+                        new_predicates.push(Constraint::Equivalence(equivalence.clone()));
                     }
 
                     knowledge.extend(new_predicates);
-                    normalize_predicates(&mut knowledge, &self_type);
                     knowledge
                 }
                 MirRelationExpr::Reduce {
@@ -305,23 +401,23 @@ impl PredicateKnowledge {
                         let column = group_key.len() + index;
                         if let Some(Ok(literal)) = aggregate.as_literal() {
                             if literal == Datum::Null {
-                                predicates.push(
+                                predicates.push(Constraint::Predicate(
                                     MirScalarExpr::Column(column)
                                         .call_unary(expr::UnaryFunc::IsNull(expr::func::IsNull)),
-                                );
+                                ));
                             } else {
-                                predicates.push(MirScalarExpr::Column(column).call_binary(
+                                predicates.push(Constraint::Equivalence(vec![
+                                    MirScalarExpr::Column(column),
                                     MirScalarExpr::literal(
                                         Ok(literal),
                                         self_type.column_types[column].scalar_type.clone(),
                                     ),
-                                    expr::BinaryFunc::Eq,
-                                ));
-                                predicates.push(
+                                ]));
+                                predicates.push(Constraint::Predicate(
                                     MirScalarExpr::column(column)
                                         .call_unary(UnaryFunc::IsNull(expr::func::IsNull))
                                         .call_unary(UnaryFunc::Not(expr::func::Not)),
-                                );
+                                ));
                             }
                         } else {
                             // Aggregates that are non-literals may still be non-null.
@@ -335,11 +431,11 @@ impl PredicateKnowledge {
                                         );
                                     }
                                 }
-                                predicates.push(
+                                predicates.push(Constraint::Predicate(
                                     MirScalarExpr::column(column)
                                         .call_unary(UnaryFunc::IsNull(expr::func::IsNull))
                                         .call_unary(UnaryFunc::Not(expr::func::Not)),
-                                );
+                                ));
                             } else {
                                 // TODO: Something more sophisticated using `input_knowledge` too.
                             }
@@ -365,11 +461,11 @@ impl PredicateKnowledge {
             predicates.extend(self_type.column_types.iter().enumerate().flat_map(
                 |(col_idx, col_typ)| {
                     if !col_typ.nullable {
-                        Some(
+                        Some(Constraint::Predicate(
                             MirScalarExpr::column(col_idx)
                                 .call_unary(UnaryFunc::IsNull(expr::func::IsNull))
                                 .call_unary(UnaryFunc::Not(expr::func::Not)),
-                        )
+                        ))
                     } else {
                         None
                     }
@@ -388,11 +484,33 @@ impl PredicateKnowledge {
     }
 }
 
+/// Adds a constraint, expressed as a predicate, to the collection.
+///
+/// Equality predicates are converted into an equivalence and an IS NOT NULL predicate.
+fn append_constraint(constraints: &mut Vec<Constraint>, predicate: MirScalarExpr) {
+    if let MirScalarExpr::CallBinary {
+        expr1,
+        expr2,
+        func: BinaryFunc::Eq,
+    } = predicate
+    {
+        constraints.push(Constraint::Predicate(
+            expr1
+                .clone()
+                .call_unary(UnaryFunc::IsNull(expr::func::IsNull))
+                .call_unary(UnaryFunc::Not(expr::func::Not)),
+        ));
+        constraints.push(Constraint::Equivalence(vec![*expr1, *expr2]));
+    } else {
+        constraints.push(Constraint::Predicate(predicate));
+    }
+}
+
 /// Put `predicates` into a normal form that minimizes redundancy and exploits equality.
 ///
 /// The method extracts equality statements, chooses representatives for each equivalence relation,
 /// and substitutes the representatives.
-fn normalize_predicates(predicates: &mut Vec<MirScalarExpr>, input_type: &repr::RelationType) {
+fn normalize_predicates(predicates: &mut Vec<Constraint>, input_type: &repr::RelationType) {
     // Remove duplicates
     predicates.sort();
     predicates.dedup();
@@ -406,34 +524,26 @@ fn normalize_predicates(predicates: &mut Vec<MirScalarExpr>, input_type: &repr::
     let mut classes = Vec::new();
     let mut other_predicates = Vec::new();
     for mut predicate in predicates.drain(..) {
-        if let MirScalarExpr::CallBinary {
-            expr1,
-            expr2,
-            func: BinaryFunc::Eq,
-        } = predicate
-        {
-            // Note: Eq is used in this transform to express class equivalence, rather
-            // than SQL equality, so a predicate like `#0 = null` cannot be reduced as
-            // `false`.
-            let mut class = Vec::new();
-            class.extend(
-                classes
-                    .iter()
-                    .position(|c: &Vec<MirScalarExpr>| c.contains(&*expr1))
-                    .map(|p| classes.remove(p))
-                    .unwrap_or_else(|| vec![*expr1]),
-            );
-            class.extend(
-                classes
-                    .iter()
-                    .position(|c: &Vec<MirScalarExpr>| c.contains(&*expr2))
-                    .map(|p| classes.remove(p))
-                    .unwrap_or_else(|| vec![*expr2]),
-            );
-            classes.push(class);
-        } else {
-            predicate.reduce(input_type);
-            other_predicates.push(predicate);
+        match predicate {
+            Constraint::Equivalence(input_class) => {
+                let mut class = Vec::new();
+                for expr in input_class {
+                    class.extend(
+                        classes
+                            .iter()
+                            .position(|c: &Vec<MirScalarExpr>| c.contains(&expr))
+                            .map(|p| classes.remove(p))
+                            .unwrap_or_else(|| vec![expr]),
+                    );
+                }
+                if class.len() > 1 {
+                    classes.push(class);
+                }
+            }
+            Constraint::Predicate(_) => {
+                predicate.reduce(input_type);
+                other_predicates.push(predicate);
+            }
         }
     }
 
@@ -453,7 +563,10 @@ fn normalize_predicates(predicates: &mut Vec<MirScalarExpr>, input_type: &repr::
             if let Some(second) = class.get(1) {
                 if second.is_literal_ok() {
                     predicates.clear();
-                    predicates.push(MirScalarExpr::literal_ok(Datum::False, ScalarType::Bool));
+                    predicates.push(Constraint::Predicate(MirScalarExpr::literal_ok(
+                        Datum::False,
+                        ScalarType::Bool,
+                    )));
                     return;
                 }
             }
@@ -482,7 +595,7 @@ fn normalize_predicates(predicates: &mut Vec<MirScalarExpr>, input_type: &repr::
 
         // Visit each predicate and rewrite using the representative from each class.
         for predicate in predicates.iter_mut() {
-            optimize(predicate, &structured);
+            optimize_constraint(predicate, &structured);
             // Simplify the predicate after the replacements
             predicate.reduce(input_type);
             // Add the optimized predicate to the knowledge base
@@ -493,9 +606,9 @@ fn normalize_predicates(predicates: &mut Vec<MirScalarExpr>, input_type: &repr::
     }
 
     // Re-introduce equality constraints using the representative.
-    for class in classes.iter() {
-        for expr in class[1..].iter() {
-            predicates.push(class[0].clone().call_binary(expr.clone(), BinaryFunc::Eq));
+    for class in classes.into_iter() {
+        if class.len() > 1 {
+            predicates.push(Constraint::Equivalence(class));
         }
     }
 
@@ -521,8 +634,21 @@ fn normalize_predicates(predicates: &mut Vec<MirScalarExpr>, input_type: &repr::
     }
 }
 
+fn substitute(predicate: &mut Constraint, map: &HashMap<MirScalarExpr, MirScalarExpr>) -> bool {
+    match predicate {
+        Constraint::Equivalence(class) => class
+            .iter_mut()
+            .map(|e| substitute_expr(e, map))
+            .fold(true, |acc, v| acc && v),
+        Constraint::Predicate(predicate) => substitute_expr(predicate, map),
+    }
+}
+
 /// Attempts to perform substitutions via `map` and returns `false` if an unreplaced column reference is reached.
-fn substitute(expression: &mut MirScalarExpr, map: &HashMap<MirScalarExpr, MirScalarExpr>) -> bool {
+fn substitute_expr(
+    expression: &mut MirScalarExpr,
+    map: &HashMap<MirScalarExpr, MirScalarExpr>,
+) -> bool {
     if let Some(expr) = map.get(expression) {
         *expression = expr.clone();
         true
@@ -531,17 +657,29 @@ fn substitute(expression: &mut MirScalarExpr, map: &HashMap<MirScalarExpr, MirSc
             MirScalarExpr::Column(_) => false,
             MirScalarExpr::Literal(_, _) => true,
             MirScalarExpr::CallNullary(_) => true,
-            MirScalarExpr::CallUnary { expr, .. } => substitute(expr, map),
+            MirScalarExpr::CallUnary { expr, .. } => substitute_expr(expr, map),
             MirScalarExpr::CallBinary { expr1, expr2, .. } => {
-                substitute(expr1, map) && substitute(expr2, map)
+                substitute_expr(expr1, map) && substitute_expr(expr2, map)
             }
             MirScalarExpr::CallVariadic { exprs, .. } => {
-                exprs.iter_mut().all(|expr| substitute(expr, map))
+                exprs.iter_mut().all(|expr| substitute_expr(expr, map))
             }
             MirScalarExpr::If { cond, then, els } => {
-                substitute(cond, map) && substitute(then, map) && substitute(els, map)
+                substitute_expr(cond, map)
+                    && substitute_expr(then, map)
+                    && substitute_expr(els, map)
             }
         }
+    }
+}
+
+fn optimize_constraint(constraint: &mut Constraint, predicates: &PredicateStructure) -> bool {
+    match constraint {
+        Constraint::Equivalence(class) => class
+            .iter_mut()
+            .map(|e| optimize(e, predicates))
+            .fold(false, |acc, v| acc || v),
+        Constraint::Predicate(predicate) => optimize(predicate, predicates),
     }
 }
 
@@ -601,7 +739,7 @@ impl<'a> PredicateStructure<'a> {
     ///
     /// The predicates are assumed normalized in the sense that all instances of `x = y` imply that
     /// `y` can and should be replaced by `x`.
-    pub fn new(predicates: &'a [MirScalarExpr]) -> Self {
+    pub fn new(predicates: &'a [Constraint]) -> Self {
         let mut structured = Self::default();
         for predicate in predicates.iter() {
             structured.add_predicate(predicate);
@@ -613,24 +751,27 @@ impl<'a> PredicateStructure<'a> {
     ///
     /// The predicate is assumed to be normalized in the sense that it's been optimized
     /// with the knowledge of the predicates already in this structure.
-    pub fn add_predicate(&mut self, predicate: &'a MirScalarExpr) {
+    pub fn add_predicate(&mut self, predicate: &'a Constraint) {
         match predicate {
-            MirScalarExpr::CallBinary {
-                expr1,
-                expr2,
-                func: BinaryFunc::Eq,
-            } => {
-                self.replacements.insert(&**expr2, &**expr1);
+            Constraint::Equivalence(input_class) => {
+                let mut it = input_class.iter();
+                if let Some(first) = it.next() {
+                    while let Some(other) = it.next() {
+                        self.replacements.insert(&other, &first);
+                    }
+                }
             }
-            MirScalarExpr::CallUnary {
-                expr,
-                func: UnaryFunc::Not(expr::func::Not),
-            } => {
-                self.known_false.insert(expr);
-            }
-            _ => {
-                self.known_true.insert(predicate);
-            }
+            Constraint::Predicate(predicate) => match predicate {
+                MirScalarExpr::CallUnary {
+                    expr,
+                    func: UnaryFunc::Not(expr::func::Not),
+                } => {
+                    self.known_false.insert(expr);
+                }
+                _ => {
+                    self.known_true.insert(predicate);
+                }
+            },
         }
     }
 }

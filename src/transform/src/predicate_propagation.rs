@@ -28,7 +28,6 @@ use crate::TransformArgs;
 use expr::{
     BinaryFunc, JoinInputMapper, MirRelationExpr, MirScalarExpr, UnaryFunc, RECURSION_LIMIT,
 };
-use itertools::Itertools;
 use ore::stack::{CheckedRecursion, RecursionGuard};
 use repr::Datum;
 use repr::ScalarType;
@@ -76,29 +75,37 @@ pub enum Constraint {
 }
 
 impl Constraint {
-    fn support(&self) -> HashSet<usize> {
+    /// Returns an iterator over the expressions contained in the constraint.
+    fn iter_expr<'a>(&'a self) -> Box<dyn Iterator<Item = &'a MirScalarExpr> + 'a> {
         match self {
-            Self::Equivalence(class) => {
-                class
-                    .iter()
-                    .map(|e| e.support())
-                    .fold(Default::default(), |mut acc, support| {
-                        acc.extend(support);
-                        acc
-                    })
-            }
-            Self::Predicate(p) => p.support(),
+            Self::Equivalence(class) => Box::new(class.iter()),
+            Self::Predicate(p) => Box::new(std::iter::once(p)),
         }
     }
 
-    fn permute_map(&mut self, permutation: &HashMap<usize, usize>) {
+    /// Returns an iterator over mutable references of the expressions contained
+    /// in the constraint.
+    fn iter_expr_mut<'a>(&'a mut self) -> Box<dyn Iterator<Item = &'a mut MirScalarExpr> + 'a> {
         match self {
-            Self::Equivalence(class) => {
-                for expr in class.iter_mut() {
-                    expr.permute_map(permutation);
-                }
-            }
-            Self::Predicate(p) => p.permute_map(permutation),
+            Self::Equivalence(class) => Box::new(class.iter_mut()),
+            Self::Predicate(p) => Box::new(std::iter::once(p)),
+        }
+    }
+
+    /// Returns a set with all the input columns referenced in the constraint.
+    fn support(&self) -> HashSet<usize> {
+        self.iter_expr()
+            .map(|e| e.support())
+            .fold(Default::default(), |mut acc, support| {
+                acc.extend(support);
+                acc
+            })
+    }
+
+    /// Updates column references in the constraint.
+    fn permute_map(&mut self, permutation: &HashMap<usize, usize>) {
+        for expr in self.iter_expr_mut() {
+            expr.permute_map(permutation);
         }
     }
 
@@ -128,27 +135,32 @@ impl Constraint {
 
     /// Simplifies all the expressions within the Constraint.
     fn reduce(&mut self, relation_type: &repr::RelationType) {
-        match self {
-            Self::Equivalence(class) => {
-                for expr in class.iter_mut() {
-                    expr.reduce(relation_type);
-                }
-            }
-            Self::Predicate(p) => p.reduce(relation_type),
+        for expr in self.iter_expr_mut() {
+            expr.reduce(relation_type);
         }
     }
 
     /// Maps all the expressions within the Constraint.
-    fn map_to_global(self, input_mapper: &JoinInputMapper, index: usize) -> Self {
-        match self {
-            Self::Equivalence(class) => Self::Equivalence(
-                class
-                    .into_iter()
-                    .map(|e| input_mapper.map_expr_to_global(e, index))
-                    .collect_vec(),
-            ),
-            Self::Predicate(p) => Self::Predicate(input_mapper.map_expr_to_global(p, index)),
+    fn map_to_global(mut self, input_mapper: &JoinInputMapper, index: usize) -> Self {
+        for expr in self.iter_expr_mut() {
+            *expr = input_mapper.map_expr_to_global(expr.to_owned(), index);
         }
+        self
+    }
+
+    /// Attempts to perform substitutions via `map` in all the expressions contained
+    /// in the constraint and returns `false` if an unreplaced column reference is
+    /// reached.
+    fn substitute(&mut self, map: &HashMap<MirScalarExpr, MirScalarExpr>) -> bool {
+        self.iter_expr_mut().all(|e| substitute(e, map))
+    }
+
+    /// Optimizes all the expressions in the constraint by performing replacements.
+    /// Returns true if any replacement took place.
+    fn optimize(&mut self, predicates: &PredicateStructure) -> bool {
+        self.iter_expr_mut()
+            .map(|e| optimize(e, predicates))
+            .fold(false, |acc, v| acc || v)
     }
 }
 
@@ -389,7 +401,7 @@ impl PredicateKnowledge {
                     // 1. Visit each predicate, and collect those that reach no `ScalarExpr::Column` when substituting per `key_exprs`.
                     //    They will be preserved and presented as output.
                     for mut predicate in input_knowledge.iter().cloned() {
-                        if substitute(&mut predicate, &key_exprs) {
+                        if predicate.substitute(&key_exprs) {
                             predicates.push(predicate);
                         }
                     }
@@ -595,7 +607,7 @@ fn normalize_predicates(predicates: &mut Vec<Constraint>, input_type: &repr::Rel
 
         // Visit each predicate and rewrite using the representative from each class.
         for predicate in predicates.iter_mut() {
-            optimize_constraint(predicate, &structured);
+            predicate.optimize(&structured);
             // Simplify the predicate after the replacements
             predicate.reduce(input_type);
             // Add the optimized predicate to the knowledge base
@@ -634,21 +646,8 @@ fn normalize_predicates(predicates: &mut Vec<Constraint>, input_type: &repr::Rel
     }
 }
 
-fn substitute(predicate: &mut Constraint, map: &HashMap<MirScalarExpr, MirScalarExpr>) -> bool {
-    match predicate {
-        Constraint::Equivalence(class) => class
-            .iter_mut()
-            .map(|e| substitute_expr(e, map))
-            .fold(true, |acc, v| acc && v),
-        Constraint::Predicate(predicate) => substitute_expr(predicate, map),
-    }
-}
-
 /// Attempts to perform substitutions via `map` and returns `false` if an unreplaced column reference is reached.
-fn substitute_expr(
-    expression: &mut MirScalarExpr,
-    map: &HashMap<MirScalarExpr, MirScalarExpr>,
-) -> bool {
+fn substitute(expression: &mut MirScalarExpr, map: &HashMap<MirScalarExpr, MirScalarExpr>) -> bool {
     if let Some(expr) = map.get(expression) {
         *expression = expr.clone();
         true
@@ -657,29 +656,17 @@ fn substitute_expr(
             MirScalarExpr::Column(_) => false,
             MirScalarExpr::Literal(_, _) => true,
             MirScalarExpr::CallNullary(_) => true,
-            MirScalarExpr::CallUnary { expr, .. } => substitute_expr(expr, map),
+            MirScalarExpr::CallUnary { expr, .. } => substitute(expr, map),
             MirScalarExpr::CallBinary { expr1, expr2, .. } => {
-                substitute_expr(expr1, map) && substitute_expr(expr2, map)
+                substitute(expr1, map) && substitute(expr2, map)
             }
             MirScalarExpr::CallVariadic { exprs, .. } => {
-                exprs.iter_mut().all(|expr| substitute_expr(expr, map))
+                exprs.iter_mut().all(|expr| substitute(expr, map))
             }
             MirScalarExpr::If { cond, then, els } => {
-                substitute_expr(cond, map)
-                    && substitute_expr(then, map)
-                    && substitute_expr(els, map)
+                substitute(cond, map) && substitute(then, map) && substitute(els, map)
             }
         }
-    }
-}
-
-fn optimize_constraint(constraint: &mut Constraint, predicates: &PredicateStructure) -> bool {
-    match constraint {
-        Constraint::Equivalence(class) => class
-            .iter_mut()
-            .map(|e| optimize(e, predicates))
-            .fold(false, |acc, v| acc || v),
-        Constraint::Predicate(predicate) => optimize(predicate, predicates),
     }
 }
 

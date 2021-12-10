@@ -65,6 +65,7 @@ impl crate::Transform for InlineLet {
                 id,
                 value: Box::new(value),
                 body: Box::new(relation.take_dangerous()),
+                tag: expr::LetTag::CSE,
             };
         }
         Ok(())
@@ -85,51 +86,72 @@ impl InlineLet {
         lets: &mut Vec<(LocalId, MirRelationExpr)>,
     ) -> Result<(), crate::TransformError> {
         self.checked_recur(|_| {
-            if let MirRelationExpr::Let { id, value, body } = relation {
+            if let MirRelationExpr::Let {
+                id,
+                value,
+                body,
+                tag,
+            } = relation
+            {
                 self.action(value, lets)?;
 
-                let mut num_gets = 0;
-                body.try_visit_mut_pre::<_, crate::TransformError>(
-                    &mut |relation| match relation {
-                        MirRelationExpr::Get { id: get_id, .. } if Id::Local(*id) == *get_id => {
-                            num_gets += 1;
-                            Ok(())
-                        }
-                        _ => Ok(()),
-                    },
-                )?;
-
-                let stripped_value = if self.inline_mfp {
-                    expr::MapFilterProject::extract_non_errors_from_expr(&**value).1
-                } else {
-                    &**value
-                };
-                let inlinable = match stripped_value {
-                    MirRelationExpr::Get { .. } | MirRelationExpr::Constant { .. } => true,
-                    _ => num_gets <= 1,
-                };
-
-                if inlinable {
-                    // if only used once, just inline it
+                if let expr::LetTag::CSE = tag {
+                    let mut num_gets = 0;
                     body.try_visit_mut_pre::<_, crate::TransformError>(&mut |relation| {
                         match relation {
                             MirRelationExpr::Get { id: get_id, .. }
                                 if Id::Local(*id) == *get_id =>
                             {
-                                *relation = (**value).clone();
+                                num_gets += 1;
                                 Ok(())
                             }
                             _ => Ok(()),
                         }
                     })?;
-                } else {
-                    // otherwise lift it to the top so it's out of the way
-                    lets.push((*id, value.take_dangerous()));
-                }
+                    let stripped_value = if self.inline_mfp {
+                        expr::MapFilterProject::extract_non_errors_from_expr(&**value).1
+                    } else {
+                        &**value
+                    };
+                    let inlinable = match stripped_value {
+                        MirRelationExpr::Get { .. } | MirRelationExpr::Constant { .. } => true,
+                        _ => num_gets <= 1,
+                    };
+                    if inlinable {
+                        // if only used once, just inline it
+                        body.try_visit_mut_pre::<_, crate::TransformError>(&mut |relation| {
+                            match relation {
+                                MirRelationExpr::Get { id: get_id, .. }
+                                    if Id::Local(*id) == *get_id =>
+                                {
+                                    *relation = (**value).clone();
+                                    Ok(())
+                                }
+                                _ => Ok(()),
+                            }
+                        })?;
+                    } else {
+                        // otherwise lift it to the top so it's out of the way
+                        lets.push((*id, value.take_dangerous()));
+                    }
 
-                *relation = body.take_dangerous();
-                // might be another Let in the body so have to recur here
-                self.action(relation, lets)
+                    *relation = body.take_dangerous();
+                    // might be another Let in the body so have to recur here
+                    self.action(relation, lets)
+                } else {
+                    let mut lets = Vec::new();
+                    self.action(body, &mut lets)?;
+
+                    for (id, value) in lets.into_iter().rev() {
+                        *body = Box::new(MirRelationExpr::Let {
+                            id,
+                            value: Box::new(value),
+                            body: Box::new(body.take_dangerous()),
+                            tag: expr::LetTag::CSE,
+                        });
+                    }
+                    Ok(())
+                }
             } else {
                 relation.try_visit_mut_children(|child| self.action(child, lets))
             }

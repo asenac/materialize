@@ -49,6 +49,7 @@ pub mod reduce_elision;
 pub mod reduction;
 pub mod reduction_pushdown;
 pub mod redundant_join;
+pub mod redundant_row;
 pub mod topk_elision;
 pub mod union_cancel;
 pub mod update_let;
@@ -186,6 +187,7 @@ impl Default for FuseAndCollapse {
             transforms: vec![
                 Box::new(crate::projection_extraction::ProjectionExtraction),
                 Box::new(crate::projection_lifting::ProjectionLifting::default()),
+                Box::new(crate::redundant_row::RedundantRow),
                 Box::new(crate::fusion::map::Map),
                 Box::new(crate::fusion::negate::Negate),
                 Box::new(crate::fusion::filter::Filter),

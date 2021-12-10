@@ -66,7 +66,12 @@ impl UpdateLet {
     ) -> Result<(), crate::TransformError> {
         self.checked_recur(|_| {
             match relation {
-                MirRelationExpr::Let { id, value, body } => {
+                MirRelationExpr::Let {
+                    id,
+                    value,
+                    body,
+                    tag: _,
+                } => {
                     self.action(value, remap, id_gen)?;
                     // If a local id, assign a new identifier and refresh the type.
                     let new_id = LocalId::new(id_gen.allocate_id());

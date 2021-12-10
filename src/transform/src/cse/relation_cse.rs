@@ -87,7 +87,12 @@ impl Bindings {
     ) -> Result<(), crate::TransformError> {
         self.checked_recur_mut(|this| {
             match relation {
-                MirRelationExpr::Let { id, value, body } => {
+                MirRelationExpr::Let {
+                    id,
+                    value,
+                    body,
+                    tag: _,
+                } => {
                     this.intern_expression(value)?;
                     let new_id = if let MirRelationExpr::Get {
                         id: Id::Local(x), ..
@@ -155,6 +160,7 @@ impl Bindings {
                 id: LocalId::new(index),
                 value: Box::new(value),
                 body: Box::new(expression.take_dangerous()),
+                tag: expr::LetTag::CSE,
             };
             *expression = new_expression;
         }

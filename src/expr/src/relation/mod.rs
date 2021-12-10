@@ -45,6 +45,17 @@ pub mod join_input_mapper;
 /// Until we fix those, we need to stick with the larger recursion limit.
 pub const RECURSION_LIMIT: usize = 2048;
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Hash, MzEnumReflect)]
+pub enum LetTag {
+    CSE,
+    /// The output of the `body` is guaranted to contain at least one row for each
+    /// distinct tuple returned by the `value`. Never inlined.
+    EnsuresOneRow,
+    /// The output of the `body` is guaranted to contain at most one row for each
+    /// distinct tuple returned by the `value`. Never inlined.
+    OneRowAtMost,
+}
+
 /// An abstract syntax tree which defines a collection.
 ///
 /// The AST is meant reflect the capabilities of the `differential_dataflow::Collection` type,
@@ -79,6 +90,8 @@ pub enum MirRelationExpr {
         value: Box<MirRelationExpr>,
         /// The result of the `Let`, evaluated with `name` bound to `value`.
         body: Box<MirRelationExpr>,
+        ///
+        tag: LetTag,
     },
     /// Project out some columns from a dataflow
     ///
@@ -245,31 +258,13 @@ impl MirRelationExpr {
     /// visited in `type_stack`.
     pub fn typ(&self) -> RelationType {
         let mut type_stack = Vec::new();
-        self.visit_pre_post(
-            &mut |e: &MirRelationExpr| -> Option<Vec<&MirRelationExpr>> {
-                if let MirRelationExpr::Let { body, .. } = &e {
-                    // Do not traverse the value sub-graph, since it's not relevant for
-                    // determing the relation type of Let operators.
-                    Some(vec![&*body])
-                } else {
-                    None
-                }
-            },
-            &mut |e: &MirRelationExpr| {
-                if let MirRelationExpr::Let { .. } = &e {
-                    let body_typ = type_stack.pop().unwrap();
-                    // Insert a dummy relation type for the value, since `typ_with_input_types`
-                    // won't look at it, but expects the relation type of the body to be second.
-                    type_stack.push(RelationType::empty());
-                    type_stack.push(body_typ);
-                }
-                let num_inputs = e.num_inputs();
-                let relation_type =
-                    e.typ_with_input_types(&type_stack[type_stack.len() - num_inputs..]);
-                type_stack.truncate(type_stack.len() - num_inputs);
-                type_stack.push(relation_type);
-            },
-        );
+        self.visit_post(&mut |e: &MirRelationExpr| {
+            let num_inputs = e.num_inputs();
+            let relation_type =
+                e.typ_with_input_types(&type_stack[type_stack.len() - num_inputs..]);
+            type_stack.truncate(type_stack.len() - num_inputs);
+            type_stack.push(relation_type);
+        });
         assert_eq!(type_stack.len(), 1);
         type_stack.pop().unwrap()
     }
@@ -332,7 +327,17 @@ impl MirRelationExpr {
                 }
             }
             MirRelationExpr::Get { typ, .. } => typ.clone(),
-            MirRelationExpr::Let { .. } => input_types.last().unwrap().clone(),
+            MirRelationExpr::Let { tag, .. } => {
+                let mut output_type = input_types.last().unwrap().clone();
+                match tag {
+                    LetTag::EnsuresOneRow | LetTag::OneRowAtMost => {
+                        let value_type = input_types.first().unwrap();
+                        output_type = output_type.with_keys(value_type.keys.clone());
+                    }
+                    _ => {}
+                }
+                output_type
+            }
             MirRelationExpr::Project { input: _, outputs } => {
                 let input_typ = &input_types[0];
                 let mut output_typ = RelationType::new(
@@ -1132,6 +1137,36 @@ impl MirRelationExpr {
                 id,
                 value: Box::new(self),
                 body: Box::new(body),
+                tag: LetTag::CSE,
+            }
+        }
+    }
+
+    /// Store `self` in a `Let` and pass the corresponding `Get` to `body`
+    pub fn let_in_tagged<Body>(
+        self,
+        id_gen: &mut IdGen,
+        tag: LetTag,
+        body: Body,
+    ) -> super::MirRelationExpr
+    where
+        Body: FnOnce(&mut IdGen, MirRelationExpr) -> super::MirRelationExpr,
+    {
+        if let MirRelationExpr::Get { .. } = self {
+            // already done
+            body(id_gen, self)
+        } else {
+            let id = LocalId::new(id_gen.allocate_id());
+            let get = MirRelationExpr::Get {
+                id: Id::Local(id),
+                typ: self.typ(),
+            };
+            let body = (body)(id_gen, get);
+            MirRelationExpr::Let {
+                id,
+                value: Box::new(self),
+                body: Box::new(body),
+                tag,
             }
         }
     }
@@ -1795,6 +1830,7 @@ impl MirRelationExprVisitor {
                 id: _,
                 value: _,
                 body: _,
+                tag: _,
             }
             | MirRelationExpr::Project {
                 input: _,

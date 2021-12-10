@@ -80,7 +80,12 @@ impl RedundantJoin {
     ) -> Result<Vec<ProvInfo>, crate::TransformError> {
         self.checked_recur(|_| {
             match relation {
-                MirRelationExpr::Let { id, value, body } => {
+                MirRelationExpr::Let {
+                    id,
+                    value,
+                    body,
+                    tag: _,
+                } => {
                     // Recursively determine provenance of the value.
                     let value_prov = self.action(value, lets)?;
                     let old = lets.insert(Id::Local(*id), value_prov);

@@ -71,7 +71,13 @@ impl JoinImplementation {
         relation: &mut MirRelationExpr,
         arranged: &mut HashMap<Id, Vec<Vec<MirScalarExpr>>>,
     ) -> Result<(), crate::TransformError> {
-        if let MirRelationExpr::Let { id, value, body } = relation {
+        if let MirRelationExpr::Let {
+            id,
+            value,
+            body,
+            tag: _,
+        } = relation
+        {
             self.action_recursive(value, arranged)?;
             match &**value {
                 MirRelationExpr::ArrangeBy { keys, .. } => {

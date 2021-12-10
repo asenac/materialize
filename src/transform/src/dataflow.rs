@@ -149,6 +149,7 @@ fn inline_views(dataflow: &mut DataflowDesc) -> Result<(), TransformError> {
                 id: new_local,
                 value: Box::new(value),
                 body: Box::new(body),
+                tag: expr::LetTag::CSE,
             };
             dataflow.objects_to_build.remove(index);
         }

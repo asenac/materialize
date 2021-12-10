@@ -565,6 +565,7 @@ impl<'a> MirRelationExprDeserializeContext<'a> {
             id,
             value: Box::new(value),
             body: Box::new(body),
+            tag: LetTag::CSE,
         })
     }
 

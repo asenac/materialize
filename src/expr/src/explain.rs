@@ -122,7 +122,12 @@ impl<'a> ViewExplanation<'a> {
                 Union { base, inputs, .. } => {
                     walk_many(iter::once(&**base).chain(inputs), explanation)
                 }
-                Let { id, body, value } => {
+                Let {
+                    id,
+                    body,
+                    value,
+                    tag: _,
+                } => {
                     // Similarly the definition of a let goes in its own chain.
                     walk(value, explanation);
                     explanation.chain += 1;

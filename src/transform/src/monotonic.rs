@@ -105,7 +105,12 @@ impl MonotonicFlag {
                     rows.iter().all(|(_, diff)| diff > &0)
                 }
                 MirRelationExpr::Threshold { input } => self.apply(input, sources, locals)?,
-                MirRelationExpr::Let { id, value, body } => {
+                MirRelationExpr::Let {
+                    id,
+                    value,
+                    body,
+                    tag: _,
+                } => {
                     let prior = locals.remove(id);
                     if self.apply(value, sources, locals)? {
                         locals.insert(*id);

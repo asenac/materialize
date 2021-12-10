@@ -91,7 +91,12 @@ impl ProjectionPushdown {
                     .extend(desired_projection.iter().cloned());
                 (0..relation.arity()).collect()
             }
-            MirRelationExpr::Let { id, value, body } => {
+            MirRelationExpr::Let {
+                id,
+                value,
+                body,
+                tag: _,
+            } => {
                 // Let harvests any requirements of get from its body,
                 // and pushes the sorted union of the requirements at its value.
                 let id = Id::Local(*id);

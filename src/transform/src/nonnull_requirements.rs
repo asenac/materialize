@@ -83,7 +83,12 @@ impl NonNullRequirements {
                     gets.entry(*id).or_insert_with(Vec::new).push(columns);
                     Ok(())
                 }
-                MirRelationExpr::Let { id, value, body } => {
+                MirRelationExpr::Let {
+                    id,
+                    value,
+                    body,
+                    tag: _,
+                } => {
                     // Let harvests any non-null requirements from its body,
                     // and acts on the intersection of the requirements for
                     // each corresponding Get, pushing them at its value.

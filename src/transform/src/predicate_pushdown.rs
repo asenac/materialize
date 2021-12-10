@@ -456,7 +456,12 @@ impl PredicatePushdown {
 
                     Ok(())
                 }
-                MirRelationExpr::Let { id, body, value } => {
+                MirRelationExpr::Let {
+                    id,
+                    body,
+                    value,
+                    tag: _,
+                } => {
                     // Push predicates and collect intersection at `Get`s.
                     self.action(body, get_predicates)?;
 

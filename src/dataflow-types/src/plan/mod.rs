@@ -318,7 +318,12 @@ impl Plan {
                     out_keys,
                 )
             }
-            MirRelationExpr::Let { id, value, body } => {
+            MirRelationExpr::Let {
+                id,
+                value,
+                body,
+                tag: _,
+            } => {
                 // It would be unfortunate to have a non-trivial `mfp` here, as we hope
                 // that they would be pushed down. I am not sure if we should take the
                 // initiative to push down the `mfp` ourselves.

@@ -240,7 +240,12 @@ impl LiteralLifting {
                     }
                     Ok(literals)
                 }
-                MirRelationExpr::Let { id, value, body } => {
+                MirRelationExpr::Let {
+                    id,
+                    value,
+                    body,
+                    tag: _,
+                } => {
                     // Any literals appended to the `value` should be used
                     // at corresponding `Get`s throughout the `body`.
                     let literals = self.action(value, gets)?;

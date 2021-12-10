@@ -88,7 +88,12 @@ impl ColumnKnowledge {
                         Ok(typ.column_types.iter().map(DatumKnowledge::from).collect())
                     }
                 }
-                MirRelationExpr::Let { id, value, body } => {
+                MirRelationExpr::Let {
+                    id,
+                    value,
+                    body,
+                    tag: _,
+                } => {
                     let value_knowledge = self.harvest(value, knowledge, knowledge_stack)?;
                     let prior_knowledge =
                         knowledge.insert(expr::Id::Local(id.clone()), value_knowledge);

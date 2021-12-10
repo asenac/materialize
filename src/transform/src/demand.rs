@@ -91,7 +91,12 @@ impl Demand {
                     gets.entry(*id).or_insert_with(HashSet::new).extend(columns);
                     Ok(())
                 }
-                MirRelationExpr::Let { id, value, body } => {
+                MirRelationExpr::Let {
+                    id,
+                    value,
+                    body,
+                    tag: _,
+                } => {
                     // Let harvests any requirements of get from its body,
                     // and pushes the union of the requirements at its value.
                     let id = Id::Local(*id);

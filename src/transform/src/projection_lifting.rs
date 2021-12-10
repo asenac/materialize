@@ -69,7 +69,12 @@ impl ProjectionLifting {
                     }
                     Ok(())
                 }
-                MirRelationExpr::Let { id, value, body } => {
+                MirRelationExpr::Let {
+                    id,
+                    value,
+                    body,
+                    tag: _,
+                } => {
                     self.action(value, gets)?;
                     let id = Id::Local(*id);
                     if let MirRelationExpr::Project { input, outputs } = &mut **value {

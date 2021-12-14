@@ -200,7 +200,7 @@ impl FromHir {
 
                 // Right box
                 let right_box = if kind.is_lateral() {
-                    self.within_context(join_box, &mut |generator| -> BoxId {
+                    self.within_context(join_box, (), &mut |generator, _| -> BoxId {
                         let right = right.take();
                         generator.generate_internal(right)
                     })
@@ -274,6 +274,19 @@ impl FromHir {
                 then: Box::new(self.generate_expr(*then, context_box)),
                 els: Box::new(self.generate_expr(*els, context_box)),
             },
+            HirScalarExpr::Select(expr) => {
+                let box_id =
+                    self.within_context(context_box, expr, &mut |generator, expr| -> BoxId {
+                        generator.generate_select(*expr)
+                    });
+                let quantifier_id =
+                    self.model
+                        .make_quantifier(QuantifierType::Scalar, box_id, context_box);
+                BoxScalarExpr::ColumnReference(ColumnReference {
+                    quantifier_id,
+                    position: 0,
+                })
+            }
             _ => panic!("unsupported expression type {:?}", expr),
         }
     }
@@ -303,12 +316,12 @@ impl FromHir {
     }
 
     /// Executes the given action within the context of the given box.
-    fn within_context<F, T>(&mut self, context_box: BoxId, f: &mut F) -> T
+    fn within_context<F, T, D>(&mut self, context_box: BoxId, data: D, f: &mut F) -> T
     where
-        F: FnMut(&mut Self) -> T,
+        F: FnMut(&mut Self, D) -> T,
     {
         self.context_stack.push(context_box);
-        let result = f(self);
+        let result = f(self, data);
         self.context_stack.pop();
         result
     }

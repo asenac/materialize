@@ -100,18 +100,52 @@ impl<'a> Lowerer<'a> {
                 // in that order.
 
                 // 1) Lower the join component of the Select box.
-                // TODO(asenac) We could join first all non-correlated quantifiers
-                // and then apply the correlated ones one by one in order of dependency
-                // on top the join built so far, adding the predicates as soon as their
-                // dependencies are satisfied.
                 let correlation_info = the_box.correlation_info(&self.model);
-                if !correlation_info.is_empty() {
-                    panic!("correlated joins are not supported yet");
+
+                // 1.1) First, join the non-correlated join operands
+                let non_correlated_quantifiers = the_box
+                    .quantifiers
+                    .iter()
+                    .filter(|q| !correlation_info.contains_key(q))
+                    .cloned()
+                    .collect::<QuantifierSet>();
+                let outer_arity = get_outer.arity();
+                let (mut input, mut column_map) = self.lower_join(
+                    get_outer,
+                    outer_column_map,
+                    &non_correlated_quantifiers,
+                    id_gen,
+                );
+                let mut joined_quantifiers = non_correlated_quantifiers;
+
+                // TODO(asenac) add those predictes in `select.predicates` which dependencies
+                // are already satisfied
+
+                // 1.2) Then, add the correlated join operands by applying them on top
+                // of the current join built so far, in order of dependency.
+                let mut remaining_quantifiers = correlation_info.iter().collect_vec();
+                // Find the first correlated operand whose dependencies are satisfied
+                while let Some(position) =
+                    remaining_quantifiers.iter().position(|(_, dependencies)| {
+                        dependencies
+                            .iter()
+                            .all(|c| joined_quantifiers.contains(&c.quantifier_id))
+                    })
+                {
+                    let (quantifier_id, _dependencies) = remaining_quantifiers.remove(position);
+                    joined_quantifiers.insert(*quantifier_id);
+
+                    input = self.apply_correlated_quantifier(
+                        input,
+                        *quantifier_id,
+                        &mut column_map,
+                        id_gen,
+                    );
+
+                    // TODO(asenac) add those predictes in `select.predicates` which dependencies
+                    // are already satisfied
                 }
 
-                let outer_arity = get_outer.arity();
-                let (mut input, column_map) =
-                    self.lower_join(get_outer, outer_column_map, &the_box.quantifiers, id_gen);
                 let input_arity = input.arity();
 
                 // 2) Lower the filter component.
@@ -152,10 +186,6 @@ impl<'a> Lowerer<'a> {
     /// used to lower expressions that sit directly on top of the join.
     ///
     /// The quantifiers are joined on the columns of the outer relation.
-    /// TODO(asenac) Since decorrelation is not yet supported the outer relation is
-    /// currently always the join identity, so the result of this method is always
-    /// a cross-join of the given quantifiers, which makes part of this code untesteable
-    /// at the moment.
     fn lower_join(
         &mut self,
         get_outer: expr::MirRelationExpr,
@@ -302,6 +332,47 @@ impl<'a> Lowerer<'a> {
             )
             .collect_vec();
         expr::MirRelationExpr::join_scalars(join_inputs, equivalences).project(projection)
+    }
+
+    fn apply_correlated_quantifier(
+        &mut self,
+        input: expr::MirRelationExpr,
+        quantifier_id: QuantifierId,
+        column_map: &mut ColumnMap,
+        id_gen: &mut IdGen,
+    ) -> expr::MirRelationExpr {
+        let before_arity = input.arity();
+        let input = input.let_in(id_gen, |id_gen, get_outer| {
+            // TODO(asenac) for quantifiers not involving any join we could just do:
+            self.lower_quantifier(quantifier_id, get_outer, &column_map, id_gen)
+
+            // let outer_key = quantifier_dependencies
+            //     .iter()
+            //     .sorted()
+            //     .map(|c| column_map.get(c).unwrap().cloned())
+            //     .collect_vec();
+
+            // let applied = self.lower_quantifier(
+            //     quantifier_id,
+            //     get_outer.clone().distinct_by(outer_key),
+            //     &column_map,
+            //     id_gen,
+            // );
+        });
+
+        // Add the newly added columns to the column map
+        let after_arity = input.arity();
+        for c in 0..after_arity - before_arity {
+            column_map.insert(
+                ColumnReference {
+                    quantifier_id,
+                    position: c,
+                },
+                before_arity + c,
+            );
+        }
+
+        input
     }
 
     /// Lowers a scalar expression, resolving the column references using

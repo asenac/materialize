@@ -357,3 +357,71 @@ select a, b, a from (select 1 as a, 2 as b) where (select true);
 | Project (#2..#4)
 ----
 ----
+
+lower
+select * from (select 1 as a) where (select a) > 1;
+----
+----
+%0 = Let l0 =
+| Constant ()
+
+%1 =
+| Constant ()
+
+%2 = Let l1 =
+| Join %0 %1
+| | implementation = Unimplemented
+| Map 1
+| Project (#0)
+
+%3 =
+| Constant ()
+
+%4 = Let l2 =
+| Join %2 %3
+| | implementation = Unimplemented
+| Map #0
+| Project (#0, #1)
+
+%5 =
+| Get %4 (l2)
+| Reduce group=(#0)
+| | agg count(true)
+| Filter (#1 > 1)
+| Project (#0)
+| Map (err: more than one record produced in subquery)
+
+%6 = Let l3 =
+| Union %4 %5
+
+%7 =
+| Get %6 (l3)
+| Distinct group=(#0)
+| Negate
+
+%8 =
+| Get %2 (l1)
+| Distinct group=(#0)
+
+%9 =
+| Union %7 %8
+
+%10 =
+| Join %9 %2 (= #0 #1)
+| | implementation = Unimplemented
+| Project (#0)
+
+%11 =
+| Constant (null)
+
+%12 =
+| Join %10 %11
+| | implementation = Unimplemented
+
+%13 =
+| Union %6 %12
+| Filter (#1 > 1)
+| Map #0
+| Project (#2)
+----
+----

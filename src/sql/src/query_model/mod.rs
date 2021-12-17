@@ -17,6 +17,7 @@ use ore::id_gen::Gen;
 pub mod dot;
 mod hir;
 mod lowering;
+pub mod rewrite_engine;
 mod scalar_expr;
 #[cfg(test)]
 mod test;
@@ -339,6 +340,36 @@ impl Model {
         Ok(())
     }
 
+    /// Visit boxes in the query graph in pre-order
+    fn visit_pre_boxes_in_subgraph_mut<'a, F, E>(
+        &'a self,
+        f: &mut F,
+        start_box: BoxId,
+    ) -> Result<(), E>
+    where
+        F: FnMut(RefMut<'a, QueryBox>) -> Result<(), E>,
+    {
+        let mut visited = HashSet::new();
+        let mut stack = vec![start_box];
+        while !stack.is_empty() {
+            let box_id = stack.pop().unwrap();
+            if visited.insert(box_id) {
+                let query_box = self.boxes.get(&box_id).expect("a valid box identifier");
+                f(query_box.borrow_mut())?;
+
+                stack.extend(
+                    query_box
+                        .borrow()
+                        .quantifiers
+                        .iter()
+                        .rev()
+                        .map(|q| self.get_quantifier(*q).input_box),
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Removes unreferenced objects from the model. May be invoked
     /// several times during query rewrites.
     #[allow(dead_code)]
@@ -449,8 +480,76 @@ impl QueryBox {
         Ok(())
     }
 
+    /// Visit all the expressions in this query box.
+    fn visit_expressions_mut<F, E>(&mut self, f: &mut F) -> Result<(), E>
+    where
+        F: FnMut(&mut BoxScalarExpr) -> Result<(), E>,
+    {
+        for c in self.columns.iter_mut() {
+            f(&mut c.expr)?;
+        }
+        match &mut self.box_type {
+            BoxType::Select(select) => {
+                for p in select.predicates.iter_mut() {
+                    f(p)?;
+                }
+                if let Some(order_key) = &mut select.order_key {
+                    for p in order_key.iter_mut() {
+                        f(p)?;
+                    }
+                }
+                if let Some(limit) = &mut select.limit {
+                    f(limit)?;
+                }
+                if let Some(offset) = &mut select.offset {
+                    f(offset)?;
+                }
+            }
+            BoxType::OuterJoin(outer_join) => {
+                for p in outer_join.predicates.iter_mut() {
+                    f(p)?;
+                }
+            }
+            BoxType::Grouping(grouping) => {
+                for p in grouping.key.iter_mut() {
+                    f(p)?;
+                }
+            }
+            BoxType::Values(values) => {
+                for row in values.rows.iter_mut() {
+                    for value in row.iter_mut() {
+                        f(value)?;
+                    }
+                }
+            }
+            BoxType::TableFunction(table_function) => {
+                for p in table_function.parameters.iter_mut() {
+                    f(p)?;
+                }
+            }
+            BoxType::Except | BoxType::Union | BoxType::Intersect | BoxType::Get(_) => {}
+        }
+        Ok(())
+    }
+
     fn is_select(&self) -> bool {
         matches!(self.box_type, BoxType::Select(_))
+    }
+
+    fn add_predicate(&mut self, predicate: Box<BoxScalarExpr>) {
+        match &mut self.box_type {
+            BoxType::Select(select) => select.predicates.push(predicate),
+            BoxType::OuterJoin(outer_join) => outer_join.predicates.push(predicate),
+            _ => unreachable!(),
+        }
+    }
+
+    fn get_predicates(&self) -> Option<&Vec<Box<BoxScalarExpr>>> {
+        match &self.box_type {
+            BoxType::Select(select) => Some(&select.predicates),
+            BoxType::OuterJoin(outer_join) => Some(&outer_join.predicates),
+            _ => None,
+        }
     }
 
     /// Correlation information of the quantifiers in this box. Returns a map

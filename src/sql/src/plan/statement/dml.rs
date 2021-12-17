@@ -174,6 +174,7 @@ pub fn describe_explain(
         StatementDesc::new(Some(RelationDesc::empty().with_named_column(
             match stage {
                 ExplainStage::RawPlan => "Raw Plan",
+                ExplainStage::QueryGraph => "Query Graph",
                 ExplainStage::DecorrelatedPlan => "Decorrelated Plan",
                 ExplainStage::OptimizedPlan { .. } => "Optimized Plan",
                 ExplainStage::PhysicalPlan => "Physical Plan",

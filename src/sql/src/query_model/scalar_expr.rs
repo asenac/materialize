@@ -72,7 +72,7 @@ pub enum BoxScalarExpr {
     },
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash, PartialOrd, Ord)]
 pub struct ColumnReference {
     pub quantifier_id: QuantifierId,
     pub position: usize,

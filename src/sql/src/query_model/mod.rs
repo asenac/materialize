@@ -179,6 +179,8 @@ pub enum BoxType {
     /// Operator that produces a set of rows, with potentially
     /// correlated values.
     Values(Values),
+    /// Windowing operator
+    Windowing,
 }
 
 #[derive(Debug, Clone)]
@@ -590,7 +592,11 @@ impl QueryBox {
                     f(p)?;
                 }
             }
-            BoxType::Except | BoxType::Union | BoxType::Intersect | BoxType::Get(_) => {}
+            BoxType::Windowing
+            | BoxType::Except
+            | BoxType::Union
+            | BoxType::Intersect
+            | BoxType::Get(_) => {}
         }
         Ok(())
     }
@@ -642,7 +648,11 @@ impl QueryBox {
                     f(p)?;
                 }
             }
-            BoxType::Except | BoxType::Union | BoxType::Intersect | BoxType::Get(_) => {}
+            BoxType::Windowing
+            | BoxType::Except
+            | BoxType::Union
+            | BoxType::Intersect
+            | BoxType::Get(_) => {}
         }
         Ok(())
     }
@@ -730,6 +740,7 @@ impl BoxType {
             BoxType::TableFunction(..) => "TableFunction",
             BoxType::Union => "Union",
             BoxType::Values(..) => "Values",
+            BoxType::Windowing => "Windowing",
         }
     }
 }

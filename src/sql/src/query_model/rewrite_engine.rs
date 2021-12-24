@@ -39,20 +39,21 @@ pub trait Rule {
 
 /// Entry-point of the normalization stage.
 pub fn rewrite_model(model: &mut Model) {
+    let mut fixup_rules: Vec<Box<dyn Rule>> = vec![Box::new(Windowing::new())];
+    apply_rules_to_model(model, &mut fixup_rules);
+    model.garbage_collect();
+
     let mut rules: Vec<Box<dyn Rule>> = vec![
         Box::new(ColumnRemoval::new()),
         Box::new(SelectMerge::new()),
         Box::new(ConstantLifting::new()),
     ];
-
     apply_rules_to_model(model, &mut rules);
-
     model.garbage_collect();
 
     let mut decorrelation_rules: Vec<Box<dyn Rule>> = vec![Box::new(Decorrelation::new())];
 
     apply_rules_to_model(model, &mut decorrelation_rules);
-
     model.garbage_collect();
 
     model.update_ids();
@@ -791,5 +792,106 @@ impl Rule for Decorrelation {
         // those added when the decorrelation logic is applied to a `Get` operator.
         let mut rules: Vec<Box<dyn Rule>> = vec![Box::new(SelectMerge::new())];
         deep_apply_rules(&mut rules, model, box_id, &mut HashSet::new());
+    }
+}
+
+struct Windowing {
+    to_pushdown: BTreeSet<BoxScalarExpr>,
+}
+
+impl Windowing {
+    fn new() -> Self {
+        Self {
+            to_pushdown: BTreeSet::new(),
+        }
+    }
+}
+
+impl Rule for Windowing {
+    fn name(&self) -> &'static str {
+        "Windowing"
+    }
+
+    fn rule_type(&self) -> RuleType {
+        RuleType::PostOrder
+    }
+
+    fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
+        self.to_pushdown.clear();
+        let b = model.get_box(box_id);
+        if b.is_select() {
+            let _ = b.visit_expressions(&mut |expr: &BoxScalarExpr| -> Result<(), ()> {
+                expr.visit(&mut |expr: &BoxScalarExpr| {
+                    if let BoxScalarExpr::Windowing(_) = expr {
+                        self.to_pushdown.insert(expr.clone());
+                    }
+                });
+                Ok(())
+            });
+
+            !self.to_pushdown.is_empty()
+        } else {
+            false
+        }
+    }
+
+    fn action(&mut self, model: &mut Model, box_id: BoxId) {
+        let new_select_box = model.make_select_box();
+        model.swap_quantifiers(box_id, new_select_box);
+        model
+            .get_mut_box(new_select_box)
+            .add_all_input_columns(model);
+
+        let mut expr_map = model
+            .get_box(new_select_box)
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.expr.clone(), i))
+            .collect::<HashMap<BoxScalarExpr, usize>>();
+
+        let windowing_box = model.make_box(BoxType::Windowing);
+        let windowing_input_q =
+            model.make_quantifier(QuantifierType::Foreach, new_select_box, windowing_box);
+
+        // Fill the windowing box
+        {
+            let mut windowing_box = model.get_mut_box(windowing_box);
+            windowing_box.add_all_input_columns(model);
+            for mut window_expr in self.to_pushdown.iter().cloned() {
+                // Update any parameters the window function may have
+                window_expr.visit_mut(&mut |expr: &mut BoxScalarExpr| {
+                    if let Some(position) = expr_map.get(expr) {
+                        *expr = BoxScalarExpr::ColumnReference(ColumnReference {
+                            quantifier_id: windowing_input_q,
+                            position: *position,
+                        });
+                    }
+                });
+                windowing_box.add_column(window_expr);
+            }
+        }
+
+        let windowing_output_q =
+            model.make_quantifier(QuantifierType::Foreach, windowing_box, box_id);
+
+        let first_window_expr = expr_map.len();
+        expr_map.extend(self.to_pushdown.iter().cloned().zip(first_window_expr..));
+
+        // Update all the expression in the box to point to columns projected by the
+        // windowing box
+        let _ = model.get_mut_box(box_id).visit_expressions_mut(
+            &mut |expr: &mut BoxScalarExpr| -> Result<(), ()> {
+                expr.visit_mut(&mut |expr: &mut BoxScalarExpr| {
+                    if let Some(position) = expr_map.get(expr) {
+                        *expr = BoxScalarExpr::ColumnReference(ColumnReference {
+                            quantifier_id: windowing_output_q,
+                            position: *position,
+                        });
+                    }
+                });
+                Ok(())
+            },
+        );
     }
 }

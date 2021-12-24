@@ -31,7 +31,7 @@ use expr::AggregateFunc;
 ///
 /// Scalar expressions only make sense within the context of a
 /// [`crate::query_model::QueryBox`], and hence, their name.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum BoxScalarExpr {
     /// A reference to a column from a quantifier that either lives in
     /// the same box as the expression or is a sibling quantifier of
@@ -79,13 +79,13 @@ pub struct ColumnReference {
     pub position: usize,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub struct BaseColumn {
     pub position: usize,
     pub column_type: repr::ColumnType,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Represents the invocation of a window function over a partition with an optional
 /// order.
 pub struct WindowExpr {
@@ -94,7 +94,7 @@ pub struct WindowExpr {
     pub order_by: Vec<BoxScalarExpr>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WindowExprType {
     Scalar(ScalarWindowFunc),
 }

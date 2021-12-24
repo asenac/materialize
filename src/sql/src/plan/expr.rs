@@ -314,7 +314,7 @@ impl ScalarWindowExpr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Scalar Window functions
 pub enum ScalarWindowFunc {
     RowNumber,

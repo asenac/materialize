@@ -298,6 +298,18 @@ impl Model {
         new_id
     }
 
+    fn swap_quantifiers(&mut self, b1: BoxId, b2: BoxId) {
+        let mut b1_b = self.get_mut_box(b1);
+        let mut b2_b = self.get_mut_box(b2);
+        std::mem::swap(&mut b1_b.quantifiers, &mut b2_b.quantifiers);
+        for q_id in b1_b.quantifiers.iter() {
+            self.get_mut_quantifier(*q_id).parent_box = b1;
+        }
+        for q_id in b2_b.quantifiers.iter() {
+            self.get_mut_quantifier(*q_id).parent_box = b2;
+        }
+    }
+
     /// Get an immutable reference to the box identified by `box_id`.
     fn get_box(&self, box_id: BoxId) -> Ref<'_, QueryBox> {
         self.boxes

@@ -320,6 +320,14 @@ pub enum ScalarWindowFunc {
     RowNumber,
 }
 
+impl fmt::Display for ScalarWindowFunc {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ScalarWindowFunc::RowNumber => f.write_str("row_number"),
+        }
+    }
+}
+
 /// A `CoercibleScalarExpr` is a [`HirScalarExpr`] whose type is not fully
 /// determined. Several SQL expressions can be freely coerced based upon where
 /// in the expression tree they appear. For example, the string literal '42'

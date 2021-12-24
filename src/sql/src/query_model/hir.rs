@@ -374,6 +374,26 @@ impl FromHir {
                     position: 0,
                 })
             }
+            HirScalarExpr::Windowing(expr) => {
+                let func = match expr.func {
+                    crate::plan::expr::WindowExprType::Scalar(scalar) => {
+                        crate::query_model::scalar_expr::WindowExprType::Scalar(scalar.func)
+                    }
+                };
+                BoxScalarExpr::Windowing(crate::query_model::WindowExpr {
+                    func,
+                    partition: expr
+                        .partition
+                        .into_iter()
+                        .map(|e| self.generate_expr(e, context_box))
+                        .collect(),
+                    order_by: expr
+                        .order_by
+                        .into_iter()
+                        .map(|e| self.generate_expr(e, context_box))
+                        .collect(),
+                })
+            }
             _ => panic!("unsupported expression type {:?}", expr),
         }
     }

@@ -548,6 +548,41 @@ impl Decorrelation {
 
                 (new_grouping_box, quantifiers_and_offsets.into_iter().next())
             }
+            BoxType::Windowing => {
+                let (new_windowing_box, quantifiers_and_offsets) =
+                    clone_box_and_decorrelate_inputs(model, input_relation);
+
+                if let Some((first_quantifier, first_offset)) =
+                    quantifiers_and_offsets.iter().next()
+                {
+                    // Extend the projection of the box to include the outer columns at the end
+                    project_outer_columns(
+                        model,
+                        new_windowing_box,
+                        *first_quantifier,
+                        *first_offset,
+                    );
+                }
+
+                // Add the outer columns to the partition key of all window functions.
+                let mut the_box = model.get_mut_box(new_windowing_box);
+                let key_suffix = column_map
+                    .iter()
+                    .sorted_by_key(|(_, position)| **position)
+                    .map(|(col_ref, _)| BoxScalarExpr::ColumnReference(col_ref.clone()))
+                    .collect_vec();
+
+                for c in the_box.columns.iter_mut() {
+                    if let BoxScalarExpr::Windowing(expr) = &mut c.expr {
+                        expr.partition.extend(key_suffix.clone());
+                    }
+                }
+
+                (
+                    new_windowing_box,
+                    quantifiers_and_offsets.into_iter().next(),
+                )
+            }
             BoxType::Union | BoxType::Except | BoxType::Intersect => {
                 let (new_box, quantifiers_and_offsets) =
                     clone_box_and_decorrelate_inputs(model, input_relation);

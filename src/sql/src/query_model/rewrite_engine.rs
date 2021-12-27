@@ -499,7 +499,7 @@ impl Decorrelation {
                                 expr1: Box::new(left),
                                 expr2: Box::new(right),
                             };
-                            select_box.add_predicate(Box::new(cmp));
+                            select_box.add_predicate(cmp);
                         }
                     }
                     drop(select_box);
@@ -541,9 +541,7 @@ impl Decorrelation {
                         column_map
                             .iter()
                             .sorted_by_key(|(_, position)| **position)
-                            .map(|(col_ref, _)| {
-                                Box::new(BoxScalarExpr::ColumnReference(col_ref.clone()))
-                            }),
+                            .map(|(col_ref, _)| BoxScalarExpr::ColumnReference(col_ref.clone())),
                     );
                 }
 
@@ -814,7 +812,7 @@ impl Rule for Decorrelation {
                     expr1: Box::new(BoxScalarExpr::ColumnReference(col_ref.clone())),
                     expr2: Box::new(right),
                 };
-                model.get_mut_box(box_id).add_predicate(Box::new(cmp));
+                model.get_mut_box(box_id).add_predicate(cmp);
             }
 
             non_correlated_quantifires.insert(quantifier_id);

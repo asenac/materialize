@@ -48,6 +48,7 @@ pub fn rewrite_model(model: &mut Model) {
         Box::new(SelectMerge::new()),
         Box::new(ConstantLifting::new()),
         Box::new(WindowingToSelect::new()),
+        Box::new(GroupingToDistinct),
     ];
     apply_rules_to_model(model, &mut rules);
     model.garbage_collect();
@@ -963,5 +964,35 @@ impl Rule for WindowingToSelect {
     fn action(&mut self, model: &mut Model, box_id: BoxId) {
         let mut b = model.get_mut_box(box_id);
         b.box_type = BoxType::Select(Select::new());
+    }
+}
+
+/// A Grouping box without aggregations is a Select box with
+/// [DistinctOperation::Enforce]
+#[derive(Default)]
+struct GroupingToDistinct;
+
+impl Rule for GroupingToDistinct {
+    fn name(&self) -> &'static str {
+        "GroupingToDistinct"
+    }
+
+    fn rule_type(&self) -> RuleType {
+        RuleType::PostOrder
+    }
+
+    fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
+        let b = model.get_box(box_id);
+        if let BoxType::Grouping(g) = &b.box_type {
+            b.columns.iter().all(|c| g.key.contains(&c.expr))
+        } else {
+            false
+        }
+    }
+
+    fn action(&mut self, model: &mut Model, box_id: BoxId) {
+        let mut b = model.get_mut_box(box_id);
+        b.box_type = BoxType::Select(Select::new());
+        b.distinct = DistinctOperation::Enforce;
     }
 }

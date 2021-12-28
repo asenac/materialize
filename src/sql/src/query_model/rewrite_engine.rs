@@ -52,6 +52,7 @@ pub fn rewrite_model(model: &mut Model) {
         Box::new(ConstantLifting::new()),
         Box::new(WindowingToSelect::new()),
         Box::new(GroupingToDistinct),
+        Box::new(ScalarToForeach::default()),
     ];
     apply_rules_to_model(model, &mut rules);
     model.garbage_collect();
@@ -986,7 +987,7 @@ impl Rule for GroupingToDistinct {
 
     fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
         let b = model.get_box(box_id);
-        if let BoxType::Grouping(g) = &b.box_type {
+        if let BoxType::Grouping(_) = &b.box_type {
             b.columns.iter().all(|c| g.key.contains(&c.expr))
         } else {
             false
@@ -998,4 +999,285 @@ impl Rule for GroupingToDistinct {
         b.box_type = BoxType::Select(Select::new());
         b.distinct = DistinctOperation::Enforce;
     }
+}
+
+/// Any Scalar quantifier whose input box that either:
+/// 1) produces at most one row AND has a predicate that discards null rows.
+/// 2) produces exactly one row.
+/// can be converted into a Foreach quantifier
+#[derive(Default)]
+struct ScalarToForeach {
+    /// Which quantifier ids from a box to convert.
+    /// Gets reset every time `condition` is called.
+    to_convert: HashSet<QuantifierId>,
+}
+
+impl Rule for ScalarToForeach {
+    fn name(&self) -> &'static str {
+        "ScalarToForeach"
+    }
+
+    fn rule_type(&self) -> RuleType {
+        RuleType::PostOrder
+    }
+
+    fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
+        self.to_convert.clear();
+
+        let b = model.get_box(box_id);
+
+        // Memoize boxes we have already seen.
+        let mut exactly_one_row_boxes = HashMap::new();
+        let mut at_most_one_row_boxes = HashMap::new();
+
+        // Find scalar quantifiers in the box that can be converted.
+        self.to_convert.extend(
+            b.quantifiers
+                .iter()
+                .filter_map(|q_id| {
+                    let q = model.get_quantifier(*q_id);
+                    if q.quantifier_type == QuantifierType::Scalar {
+                        Some((q_id, q.input_box))
+                    } else {
+                        None
+                    }
+                })
+                .filter_map(|(q_id, input_box_id)| {
+                    exactly_one_row(
+                        model,
+                        input_box_id,
+                        &mut exactly_one_row_boxes,
+                        &mut at_most_one_row_boxes,
+                    );
+                    if exactly_one_row_boxes[&box_id] {
+                        Some(q_id)
+                    } else if let Some(predicates) = b.get_predicates() {
+                        at_most_one_row(
+                            model,
+                            input_box_id,
+                            &mut exactly_one_row_boxes,
+                            &mut at_most_one_row_boxes,
+                        );
+                        // TODO: determine if the predicate discards null rows.
+                        /* if predicates.iter().any(|p| ) && */
+                        Some(q_id)
+                        //}
+                    } else {
+                        None
+                    }
+                }),
+        );
+        !self.to_convert.is_empty()
+    }
+
+    fn action(&mut self, model: &mut Model, _box_id: BoxId) {
+        for q_id in &self.to_convert {
+            let mut q_mut = model.get_mut_quantifier(*q_id);
+            q_mut.quantifier_type = QuantifierType::Foreach;
+        }
+    }
+}
+
+/// Determines if box corresponding to `box_id` produces exactly one row.
+///
+/// Adds the result to `exactly_one_row_boxes`.
+///
+/// To save computation effort, the method will refer to information contained in
+/// `at_most_one_row_boxes` and `exactly_one_row_boxes`. Also, if the method
+/// finds out whether or not another box produces at most one row (resp.
+/// exactly one row), it will add that info to `at_most_one_row_boxes` (resp.
+/// `exactly_one_row_boxes`).
+fn exactly_one_row(
+    model: &Model,
+    box_id: BoxId,
+    exactly_one_row_boxes: &mut HashMap<BoxId, bool>,
+    at_most_one_row_boxes: &mut HashMap<BoxId, bool>,
+) {
+    if exactly_one_row_boxes.contains_key(&box_id) {
+        return;
+    }
+    let b = model.get_box(box_id);
+
+    let mut result = false;
+    // See if the box fulfills any of the conditions that would allow it to
+    // exactly one row.
+    match &b.box_type {
+        BoxType::Grouping(grouping) => {
+            // 1) a Grouping box with an empty grouping key
+            if grouping.key.is_empty() {
+                result = true;
+            }
+        }
+        BoxType::Select(select) => {
+            // 2) a Select box with no predicates whose Foreach quantifiers
+            // meet the exactly_one_tuple condition.
+            if select.predicates.is_empty()
+                && b.quantifiers
+                    .iter()
+                    .filter_map(|q_id| {
+                        let q = model.get_quantifier(*q_id);
+                        if q.quantifier_type == QuantifierType::Foreach {
+                            Some(q)
+                        } else {
+                            None
+                        }
+                    })
+                    .any(|q| {
+                        exactly_one_row(
+                            model,
+                            q.input_box,
+                            exactly_one_row_boxes,
+                            at_most_one_row_boxes,
+                        );
+                        exactly_one_row_boxes[&q.input_box]
+                    })
+            {
+                result = true;
+            }
+            // TODO: 3) a Select box that has a Foreach that meets the
+            //    exactly_one_tuple condition and it is fully joined with the
+            //    remaining Foreach quantifiers via equality predicates with one
+            //    of its unique keys.
+        }
+        BoxType::OuterJoin(_) => {
+            // 4) an OuterJoin box whose PreservedForeach quantifier meets the
+            // exactly_one_tuple condition and its Foreach side (the
+            // non-preserving side) meets at least the one_tuple_at_most
+            // condition.
+            if let Some(preserved_q_id) = b.quantifiers.iter().find(|q_id| {
+                let q = model.get_quantifier(**q_id);
+                exactly_one_row(
+                    model,
+                    q.input_box,
+                    exactly_one_row_boxes,
+                    at_most_one_row_boxes,
+                );
+                q.quantifier_type == QuantifierType::PreservedForeach
+                    && exactly_one_row_boxes[&q.input_box]
+            }) {
+                if b.quantifiers
+                    .iter()
+                    .filter(|q_id| *q_id != preserved_q_id)
+                    .all(|q_id| {
+                        let q = model.get_quantifier(*q_id);
+                        at_most_one_row(
+                            model,
+                            q.input_box,
+                            exactly_one_row_boxes,
+                            at_most_one_row_boxes,
+                        );
+                        at_most_one_row_boxes[&q.input_box]
+                    })
+                {
+                    result = true;
+                }
+            }
+        }
+        BoxType::Values(values) => {
+            // 5) A Values box with one row.
+            if values.rows.len() == 1 {
+                result = true;
+            }
+        }
+        _ => {}
+    }
+    exactly_one_row_boxes.insert(box_id, result);
+}
+
+/// Determines if box corresponding to `box_id` produces at most one row.
+///
+/// Adds the result to `at_most_one_row_boxes`.
+///
+/// Note that this function calls [exactly_one_row].
+///
+/// To save computation effort, the function will refer to information contained in
+/// `at_most_one_row_boxes` and `exactly_one_row_boxes`. Also, if the function
+/// finds out whether or not another box produces at most one row (resp.
+/// exactly one row), it will add that info to `at_most_one_row_boxes` (resp.
+/// `exactly_one_row_boxes`).
+fn at_most_one_row(
+    model: &Model,
+    box_id: BoxId,
+    exactly_one_row_boxes: &mut HashMap<BoxId, bool>,
+    at_most_one_row_boxes: &mut HashMap<BoxId, bool>,
+) {
+    if at_most_one_row_boxes.contains_key(&box_id) {
+        return;
+    }
+
+    let mut result = false;
+    exactly_one_row(model, box_id, exactly_one_row_boxes, at_most_one_row_boxes);
+    if let Some(true) = exactly_one_row_boxes.get(&box_id) {
+        // 1) exactly_one_row returns true
+        result = true;
+    } else {
+        let b = model.get_box(box_id);
+
+        match &b.box_type {
+            BoxType::Select(_) => {
+                // 2) a Select box whose Foreach quantifiers meet the one_tuple_at_most
+                //    condition (regardless of whether  it contains any predicates),
+                if b.quantifiers
+                    .iter()
+                    .filter_map(|q_id| {
+                        let q = model.get_quantifier(*q_id);
+                        if q.quantifier_type == QuantifierType::Foreach {
+                            Some(q)
+                        } else {
+                            None
+                        }
+                    })
+                    .any(|q| {
+                        at_most_one_row(
+                            model,
+                            q.input_box,
+                            exactly_one_row_boxes,
+                            at_most_one_row_boxes,
+                        );
+                        at_most_one_row_boxes[&q.input_box]
+                    })
+                {
+                    result = true;
+                }
+            }
+            BoxType::Grouping(_) => {
+                // 3) a Grouping box whose input quantifier meets the one_tuple_at_most
+                //    condition,
+                if b.quantifiers.iter().all(|q_id| {
+                    let q = model.get_quantifier(*q_id);
+                    at_most_one_row(
+                        model,
+                        q.input_box,
+                        exactly_one_row_boxes,
+                        at_most_one_row_boxes,
+                    );
+                    at_most_one_row_boxes[&q.input_box]
+                }) {
+                    result = true;
+                }
+            }
+            BoxType::OuterJoin(outer_join) => {
+                // 4) OuterJoin box where both the preserving side and the non-preserving
+                // side meet the one_tuple_at_most condition.
+                if b.quantifiers
+                    .iter()
+                    .filter(|q_id| *q_id != preserved_q_id)
+                    .all(|q_id| {
+                        let q = model.get_quantifier(*q_id);
+                        at_most_one_row(
+                            model,
+                            q.input_box,
+                            exactly_one_row_boxes,
+                            at_most_one_row_boxes,
+                        );
+                        at_most_one_row_boxes[&q.input_box]
+                    })
+                {
+                    result = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    at_most_one_row_boxes.insert(box_id, result);
 }

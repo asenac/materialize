@@ -21,6 +21,9 @@ pub enum RuleType {
     TopBoxOnly,
     PreOrder,
     PostOrder,
+    /// Should be applied to all boxes, but does not have a preferred traversal
+    /// order.
+    AllBoxes,
 }
 
 /// Trait for rewrite rules
@@ -118,7 +121,7 @@ fn deep_apply_rules(
 
         for rule in rules
             .iter_mut()
-            .filter(|r| matches!(r.rule_type(), RuleType::PostOrder))
+            .filter(|r| matches!(r.rule_type(), RuleType::PostOrder | RuleType::AllBoxes))
         {
             apply_rule(&mut **rule, model, box_id);
         }
@@ -978,7 +981,7 @@ impl Rule for GroupingToDistinct {
     }
 
     fn rule_type(&self) -> RuleType {
-        RuleType::PostOrder
+        RuleType::AllBoxes
     }
 
     fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {

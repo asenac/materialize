@@ -988,16 +988,49 @@ impl Rule for GroupingToDistinct {
     fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
         let b = model.get_box(box_id);
         if let BoxType::Grouping(_) = &b.box_type {
-            b.columns.iter().all(|c| g.key.contains(&c.expr))
+            b.columns
+                .iter()
+                .all(|c| !matches!(c.expr, BoxScalarExpr::Aggregate { .. }))
         } else {
             false
         }
     }
 
     fn action(&mut self, model: &mut Model, box_id: BoxId) {
+        // 1 Add a new select box
+        let new_select_id = model.make_select_box();
+
+        // 2 Move all quantifiers of this box down to the new select box.
+        model.swap_quantifiers(box_id, new_select_id);
+
+        // 5 Add a quantifier connecting this box to the new select box.
+        let new_quantifier = model.make_quantifier(QuantifierType::Foreach, new_select_id, box_id);
+
+        // 3 The new select box does a distinct on all of the grouping keys.
+        let mut new_select_box = model.get_mut_box(new_select_id);
+        new_select_box.distinct = DistinctOperation::Enforce;
         let mut b = model.get_mut_box(box_id);
+        if let BoxType::Grouping(g) = &mut b.box_type {
+            for col in g.key.drain(..) {
+                new_select_box.add_column(col);
+            }
+        }
+
+        // 4 Change this box to a Select
         b.box_type = BoxType::Select(Select::new());
-        b.distinct = DistinctOperation::Enforce;
+
+        // 6 Remap all the columns in the projection of this box to reference
+        // the new quantifier.
+        for col in b.columns.iter_mut() {
+            col.expr = BoxScalarExpr::ColumnReference(ColumnReference {
+                quantifier_id: new_quantifier,
+                position: new_select_box
+                    .columns
+                    .iter()
+                    .position(|c| c.expr == col.expr)
+                    .unwrap(),
+            });
+        }
     }
 }
 

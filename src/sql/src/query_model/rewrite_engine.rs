@@ -27,6 +27,12 @@ pub enum RuleType {
 }
 
 /// Trait for rewrite rules
+/// 
+/// State stored in an object implementing this trait by [Rule::condition]
+/// can be carried over to the [Rule::action] call immediately after.
+/// 
+/// State should not be stored in an object to be carried over between different
+/// boxes or different calls to the same box. 
 pub trait Rule {
     fn name(&self) -> &'static str;
 

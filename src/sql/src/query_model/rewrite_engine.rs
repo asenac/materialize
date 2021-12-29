@@ -30,7 +30,9 @@ pub enum RuleType {
 pub trait Rule {
     fn name(&self) -> &'static str;
 
-    fn rule_type(&self) -> RuleType;
+    fn rule_type() -> RuleType
+    where
+        Self: Sized;
 
     /// Whether the action should be fired for the given box.
     /// This method is not allowed to modify the model in any way.
@@ -40,24 +42,40 @@ pub trait Rule {
     fn action(&mut self, model: &mut Model, box_id: BoxId);
 }
 
+/// Generates blank instances of a rule.
+#[allow(missing_debug_implementations)]
+pub struct RuleGenerator {
+    pub typ: RuleType,
+    /// Function that creates a blank instance of the rule.
+    pub generate: Box<dyn Fn() -> Box<dyn Rule>>,
+}
+
+/// Create a RuleGenerator that generates blank instances of `R`.
+pub fn make_generator<R: 'static + Rule + Default>() -> RuleGenerator {
+    RuleGenerator {
+        typ: R::rule_type(),
+        generate: Box::new(|| Box::new(R::default())),
+    }
+}
+
 /// Entry-point of the normalization stage.
 pub fn rewrite_model(model: &mut Model) {
-    let mut fixup_rules: Vec<Box<dyn Rule>> = vec![Box::new(Windowing::new())];
+    let mut fixup_rules: Vec<RuleGenerator> = vec![make_generator::<Windowing>()];
     apply_rules_to_model(model, &mut fixup_rules);
     model.garbage_collect();
 
-    let mut rules: Vec<Box<dyn Rule>> = vec![
-        Box::new(ColumnRemoval::new()),
-        Box::new(SelectMerge::new()),
-        Box::new(ConstantLifting::new()),
-        Box::new(WindowingToSelect::new()),
-        Box::new(GroupingToDistinct),
-        Box::new(ScalarToForeach::default()),
+    let mut rules: Vec<RuleGenerator> = vec![
+        make_generator::<ColumnRemoval>(),
+        make_generator::<SelectMerge>(),
+        make_generator::<ConstantLifting>(),
+        make_generator::<WindowingToSelect>(),
+        make_generator::<GroupingToDistinct>(),
+        make_generator::<ScalarToForeach>(),
     ];
     apply_rules_to_model(model, &mut rules);
     model.garbage_collect();
 
-    let mut decorrelation_rules: Vec<Box<dyn Rule>> = vec![Box::new(Decorrelation::new())];
+    let mut decorrelation_rules: Vec<RuleGenerator> = vec![make_generator::<Decorrelation>()];
 
     apply_rules_to_model(model, &mut decorrelation_rules);
     model.garbage_collect();
@@ -66,21 +84,21 @@ pub fn rewrite_model(model: &mut Model) {
 }
 
 /// Transform the model by applying a list of rewrite rules.
-pub fn apply_rules_to_model(model: &mut Model, rules: &mut Vec<Box<dyn Rule>>) {
+pub fn apply_rules_to_model(model: &mut Model, rules: &mut Vec<RuleGenerator>) {
     for rule in rules
         .iter_mut()
-        .filter(|r| matches!(r.rule_type(), RuleType::TopBoxOnly))
+        .filter(|r| matches!(r.typ, RuleType::TopBoxOnly))
     {
-        apply_rule(&mut **rule, model, model.top_box);
+        apply_rule(&mut *(*rule.generate)(), model, model.top_box);
     }
 
     deep_apply_rules(rules, model, model.top_box, &mut HashSet::new());
 
     for rule in rules
         .iter_mut()
-        .filter(|r| matches!(r.rule_type(), RuleType::TopBoxOnly))
+        .filter(|r| matches!(r.typ, RuleType::TopBoxOnly))
     {
-        apply_rule(&mut **rule, model, model.top_box);
+        apply_rule(&mut *(*rule.generate)(), model, model.top_box);
     }
 }
 
@@ -101,7 +119,7 @@ fn apply_rule(rule: &mut dyn Rule, model: &mut Model, box_id: BoxId) {
 /// the subgraph starting in the given box. `visited_boxes` keeps track of all the
 /// visited boxes so far, to avoid visiting them again.
 fn deep_apply_rules(
-    rules: &mut Vec<Box<dyn Rule>>,
+    rules: &mut Vec<RuleGenerator>,
     model: &mut Model,
     box_id: BoxId,
     visited_boxes: &mut HashSet<BoxId>,
@@ -109,9 +127,9 @@ fn deep_apply_rules(
     if visited_boxes.insert(box_id) {
         for rule in rules
             .iter_mut()
-            .filter(|r| matches!(r.rule_type(), RuleType::PreOrder))
+            .filter(|r| matches!(r.typ, RuleType::PreOrder))
         {
-            apply_rule(&mut **rule, model, box_id);
+            apply_rule(&mut *(*rule.generate)(), model, box_id);
         }
 
         let quantifiers = model.get_box(box_id).quantifiers.clone();
@@ -122,25 +140,17 @@ fn deep_apply_rules(
 
         for rule in rules
             .iter_mut()
-            .filter(|r| matches!(r.rule_type(), RuleType::PostOrder | RuleType::AllBoxes))
+            .filter(|r| matches!(r.typ, RuleType::PostOrder | RuleType::AllBoxes))
         {
-            apply_rule(&mut **rule, model, box_id);
+            apply_rule(&mut *(*rule.generate)(), model, box_id);
         }
     }
 }
 
 /// Merges nested select boxes.
+#[derive(Default)]
 struct SelectMerge {
     to_merge: QuantifierSet,
-}
-
-impl SelectMerge {
-    fn new() -> Self {
-        Self {
-            /// Set of quantifiers to be removed from the current box
-            to_merge: BTreeSet::new(),
-        }
-    }
 }
 
 impl Rule for SelectMerge {
@@ -148,12 +158,11 @@ impl Rule for SelectMerge {
         "SelectMerge"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
     fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
-        self.to_merge.clear();
         let outer_box = model.get_box(box_id);
         if let BoxType::Select(_outer_select) = &outer_box.box_type {
             for q_id in outer_box.quantifiers.iter() {
@@ -232,20 +241,15 @@ impl Rule for SelectMerge {
 ///
 /// TODO(asenac) For unions, we can only lift a constant if all the branches
 /// project the same constant in the same position.
+#[derive(Default)]
 struct ConstantLifting {}
-
-impl ConstantLifting {
-    fn new() -> Self {
-        Self {}
-    }
-}
 
 impl Rule for ConstantLifting {
     fn name(&self) -> &'static str {
         "ConstantLifting"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
@@ -282,16 +286,9 @@ impl Rule for ConstantLifting {
     }
 }
 
+#[derive(Default)]
 struct ColumnRemoval {
     remap: HashMap<BoxId, HashMap<usize, usize>>,
-}
-
-impl ColumnRemoval {
-    fn new() -> Self {
-        Self {
-            remap: HashMap::new(),
-        }
-    }
 }
 
 impl Rule for ColumnRemoval {
@@ -299,12 +296,11 @@ impl Rule for ColumnRemoval {
         "ColumnRemoval"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::TopBoxOnly
     }
 
     fn condition(&mut self, model: &Model, top_box: BoxId) -> bool {
-        self.remap.clear();
         // used columns per box
         let mut used_columns = HashMap::new();
         for (_, b) in model.boxes.iter() {
@@ -404,6 +400,7 @@ impl Rule for ColumnRemoval {
 ///
 /// Note: a quantifier cannot be correlated with itself, that is called
 /// recursion instead.
+#[derive(Default)]
 struct Decorrelation {
     /// The correlation information of the quantifiers in the current box
     /// being evaluated.
@@ -420,12 +417,6 @@ type CacheEntry = (
 );
 
 impl Decorrelation {
-    fn new() -> Self {
-        Self {
-            correlation_info: BTreeMap::new(),
-        }
-    }
-
     /// Returns a decorrelated version of the input relation, ie. that is not correlated with
     /// any of the columns in the `column_map`.
     ///
@@ -739,7 +730,7 @@ impl Rule for Decorrelation {
         "Decorrelation"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
@@ -829,21 +820,14 @@ impl Rule for Decorrelation {
 
         // Simplify the decorrelated box by fusing any redundant `Select` boxes, for example,
         // those added when the decorrelation logic is applied to a `Get` operator.
-        let mut rules: Vec<Box<dyn Rule>> = vec![Box::new(SelectMerge::new())];
+        let mut rules: Vec<RuleGenerator> = vec![make_generator::<SelectMerge>()];
         deep_apply_rules(&mut rules, model, box_id, &mut HashSet::new());
     }
 }
 
+#[derive(Default)]
 struct Windowing {
     to_pushdown: BTreeSet<BoxScalarExpr>,
-}
-
-impl Windowing {
-    fn new() -> Self {
-        Self {
-            to_pushdown: BTreeSet::new(),
-        }
-    }
 }
 
 impl Rule for Windowing {
@@ -851,12 +835,11 @@ impl Rule for Windowing {
         "Windowing"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
     fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
-        self.to_pushdown.clear();
         let b = model.get_box(box_id);
         if b.is_select() {
             let _ = b.visit_expressions(&mut |expr: &BoxScalarExpr| -> Result<(), ()> {
@@ -937,20 +920,15 @@ impl Rule for Windowing {
 
 /// Any windowing box not projecting the result of any windowing function can be converted
 /// into a regular Select box.
-struct WindowingToSelect {}
-
-impl WindowingToSelect {
-    fn new() -> Self {
-        Self {}
-    }
-}
+#[derive(Default)]
+struct WindowingToSelect;
 
 impl Rule for WindowingToSelect {
     fn name(&self) -> &'static str {
         "WindowingToSelect"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
@@ -981,7 +959,7 @@ impl Rule for GroupingToDistinct {
         "GroupingToDistinct"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::AllBoxes
     }
 
@@ -1050,13 +1028,11 @@ impl Rule for ScalarToForeach {
         "ScalarToForeach"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
     fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
-        self.to_convert.clear();
-
         let b = model.get_box(box_id);
 
         // Memoize boxes we have already seen.

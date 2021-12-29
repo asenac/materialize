@@ -53,34 +53,36 @@ use crate::plan::expr::{
 /// subquery, especially when the original conjunction contains join keys.
 pub fn split_subquery_predicates(expr: &mut HirRelationExpr) {
     fn walk_relation(expr: &mut HirRelationExpr) {
-        expr.visit_mut(&mut |expr| match expr {
-            HirRelationExpr::Map { scalars, .. } => {
-                for scalar in scalars {
-                    walk_scalar(scalar);
+        expr.visit_mut(0, &mut |expr, _| {
+            match expr {
+                HirRelationExpr::Map { scalars, .. } => {
+                    for scalar in scalars {
+                        walk_scalar(scalar);
+                    }
                 }
+                HirRelationExpr::CallTable { exprs, .. } => {
+                    for expr in exprs {
+                        walk_scalar(expr);
+                    }
+                }
+                HirRelationExpr::Filter { predicates, .. } => {
+                    let mut subqueries = vec![];
+                    for predicate in &mut *predicates {
+                        walk_scalar(predicate);
+                        extract_conjuncted_subqueries(predicate, &mut subqueries);
+                    }
+                    // TODO(benesch): we could be smarter about the order in which
+                    // we emit subqueries. At the moment we just emit in the order
+                    // we discovered them, but ideally we'd emit them in an order
+                    // that accounted for their cost/selectivity. E.g., low-cost,
+                    // high-selectivity subqueries should go first.
+                    for subquery in subqueries {
+                        predicates.push(subquery);
+                    }
+                }
+                _ => (),
             }
-            HirRelationExpr::CallTable { exprs, .. } => {
-                for expr in exprs {
-                    walk_scalar(expr);
-                }
-            }
-            HirRelationExpr::Filter { predicates, .. } => {
-                let mut subqueries = vec![];
-                for predicate in &mut *predicates {
-                    walk_scalar(predicate);
-                    extract_conjuncted_subqueries(predicate, &mut subqueries);
-                }
-                // TODO(benesch): we could be smarter about the order in which
-                // we emit subqueries. At the moment we just emit in the order
-                // we discovered them, but ideally we'd emit them in an order
-                // that accounted for their cost/selectivity. E.g., low-cost,
-                // high-selectivity subqueries should go first.
-                for subquery in subqueries {
-                    predicates.push(subquery);
-                }
-            }
-            _ => (),
-        })
+        });
     }
 
     fn walk_scalar(expr: &mut HirScalarExpr) {
@@ -190,7 +192,12 @@ pub fn try_simplify_quantified_comparisons(expr: &mut HirRelationExpr) {
                 outers.insert(0, left.typ(&outers, &NO_PARAMS));
                 walk_relation(right, &outers);
             }
-            expr => expr.visit1_mut(&mut |expr| walk_relation(expr, outers)),
+            expr => {
+                let _ = expr.visit1_mut(0, &mut |expr, _| -> Result<(), ()> {
+                    walk_relation(expr, outers);
+                    Ok(())
+                });
+            }
         }
     }
 

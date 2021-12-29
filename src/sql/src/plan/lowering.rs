@@ -1269,7 +1269,7 @@ where
     // detecting the moment of decorrelation in the optimizer right now is too
     // hard.
     let mut is_simple = true;
-    inner.visit(&mut |expr| match expr {
+    inner.visit(0, &mut |expr, _| match expr {
         HirRelationExpr::Constant { .. }
         | HirRelationExpr::Project { .. }
         | HirRelationExpr::Map { .. }
@@ -1304,41 +1304,43 @@ where
     });
     // Collect all the outer columns referenced by any CTE referenced by
     // the inner relation.
-    inner.visit(&mut |e| match e {
-        HirRelationExpr::Get {
-            id: expr::Id::Local(id),
-            ..
-        } => {
-            if let Some(cte_desc) = cte_map.get(id) {
-                let cte_outer_arity = cte_desc.outer_relation.arity();
-                outer_cols.extend(
-                    col_map
-                        .inner
-                        .iter()
-                        .filter(|(_, position)| **position < cte_outer_arity)
-                        .map(|(c, _)| {
-                            // `col_map` maps column references to column positions in
-                            // `outer`'s projection.
-                            // `outer_cols` is meant to contain the external column
-                            // references in `inner`.
-                            // Since `inner` defines a new scope, any column reference
-                            // in `col_map` is one level deeper when seen from within
-                            // `inner`, hence the +1.
-                            ColumnRef {
-                                level: c.level + 1,
-                                column: c.column,
-                            }
-                        }),
-                );
+    inner.visit(0, &mut |e, _| {
+        match e {
+            HirRelationExpr::Get {
+                id: expr::Id::Local(id),
+                ..
+            } => {
+                if let Some(cte_desc) = cte_map.get(id) {
+                    let cte_outer_arity = cte_desc.outer_relation.arity();
+                    outer_cols.extend(
+                        col_map
+                            .inner
+                            .iter()
+                            .filter(|(_, position)| **position < cte_outer_arity)
+                            .map(|(c, _)| {
+                                // `col_map` maps column references to column positions in
+                                // `outer`'s projection.
+                                // `outer_cols` is meant to contain the external column
+                                // references in `inner`.
+                                // Since `inner` defines a new scope, any column reference
+                                // in `col_map` is one level deeper when seen from within
+                                // `inner`, hence the +1.
+                                ColumnRef {
+                                    level: c.level + 1,
+                                    column: c.column,
+                                }
+                            }),
+                    );
+                }
             }
+            HirRelationExpr::Let { id, .. } => {
+                // Note: if ID uniqueness is not guaranteed, we can't use `visit` since
+                // we would need to remove the old CTE with the same ID temporarily while
+                // traversing the definition of the new CTE under the same ID.
+                assert!(!cte_map.contains_key(id));
+            }
+            _ => {}
         }
-        HirRelationExpr::Let { id, .. } => {
-            // Note: if ID uniqueness is not guaranteed, we can't use `visit` since
-            // we would need to remove the old CTE with the same ID temporarily while
-            // traversing the definition of the new CTE under the same ID.
-            assert!(!cte_map.contains_key(id));
-        }
-        _ => {}
     });
     let mut new_col_map = HashMap::new();
     let mut key = vec![];

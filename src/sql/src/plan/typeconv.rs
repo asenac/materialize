@@ -21,6 +21,8 @@ use expr::func;
 use expr::VariadicFunc;
 use repr::{ColumnName, ColumnType, Datum, RelationType, ScalarBaseType, ScalarType};
 
+use crate::plan::HirRelationExpr;
+
 use super::error::PlanError;
 use super::expr::{CoercibleScalarExpr, ColumnRef, HirScalarExpr, UnaryFunc};
 use super::query::{ExprContext, QueryContext};
@@ -31,9 +33,28 @@ fn sql_impl_cast(expr: &'static str) -> CastTemplate {
     let invoke = crate::func::sql_impl(expr);
     CastTemplate::new(move |ecx, _ccx, from_type, _to_type| {
         let mut out = invoke(&ecx.qcx, vec![from_type.clone()]).ok()?;
-        Some(move |e| {
-            out.splice_parameters(&[e], 0);
-            out
+        let cte_id = expr::LocalId::new(ecx.qcx.ctes.len() as u64);
+        let from_type = from_type.clone().nullable(true);
+        Some(move |mut e: HirScalarExpr| {
+            e.visit_columns_mut(0, &mut |depth, col| {
+                if col.level >= depth {
+                    col.level += 1;
+                }
+            });
+            let cte_value = HirRelationExpr::constant(vec![], RelationType::empty()).map(vec![e]);
+            let cte_ref = HirRelationExpr::Get {
+                id: expr::Id::Local(cte_id.clone()),
+                typ: RelationType::new(vec![from_type]),
+            };
+            let param = HirScalarExpr::Select(Box::new(cte_ref));
+            out.splice_parameters(&[param], 0);
+            let cte_body = HirRelationExpr::constant(vec![], RelationType::empty()).map(vec![out]);
+            HirScalarExpr::Select(Box::new(HirRelationExpr::Let {
+                name: "Cast".to_string(),
+                id: cte_id,
+                value: Box::new(cte_value),
+                body: Box::new(cte_body),
+            }))
         })
     })
 }

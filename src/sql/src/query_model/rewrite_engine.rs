@@ -27,12 +27,12 @@ pub enum RuleType {
 }
 
 /// Trait for rewrite rules
-/// 
+///
 /// State stored in an object implementing this trait by [Rule::condition]
 /// can be carried over to the [Rule::action] call immediately after.
-/// 
+///
 /// State should not be stored in an object to be carried over between different
-/// boxes or different calls to the same box. 
+/// boxes or different calls to the same box.
 pub trait Rule {
     fn name(&self) -> &'static str;
 
@@ -71,7 +71,7 @@ pub fn rewrite_model(model: &mut Model) {
     model.garbage_collect();
 
     let mut rules: Vec<RuleGenerator> = vec![
-        make_generator::<ColumnRemoval>(),
+        //make_generator::<ColumnRemoval>(),
         make_generator::<SelectMerge>(),
         make_generator::<ConstantLifting>(),
         make_generator::<WindowingToSelect>(),
@@ -1045,10 +1045,10 @@ impl Rule for ScalarToForeach {
         let mut exactly_one_row_boxes = HashMap::new();
         let mut at_most_one_row_boxes = HashMap::new();
 
-        // Find scalar quantifiers in the box that can be converted.
         self.to_convert.extend(
             b.quantifiers
                 .iter()
+                // Find scalar quantifiers in the box ...
                 .filter_map(|q_id| {
                     let q = model.get_quantifier(*q_id);
                     if q.quantifier_type == QuantifierType::Scalar {
@@ -1057,6 +1057,7 @@ impl Rule for ScalarToForeach {
                         None
                     }
                 })
+                // that can be converted.
                 .filter_map(|(q_id, input_box_id)| {
                     exactly_one_row(
                         model,
@@ -1064,7 +1065,7 @@ impl Rule for ScalarToForeach {
                         &mut exactly_one_row_boxes,
                         &mut at_most_one_row_boxes,
                     );
-                    if exactly_one_row_boxes[&box_id] {
+                    if exactly_one_row_boxes[&input_box_id] {
                         Some(q_id)
                     } else if let Some(predicates) = b.get_predicates() {
                         at_most_one_row(
@@ -1073,10 +1074,13 @@ impl Rule for ScalarToForeach {
                             &mut exactly_one_row_boxes,
                             &mut at_most_one_row_boxes,
                         );
-                        // TODO: determine if the predicate discards null rows.
-                        /* if predicates.iter().any(|p| ) && */
-                        Some(q_id)
+                        if at_most_one_row_boxes[&input_box_id] {
+                        //if predicates.iter().any(|p| ) {
+                            Some(q_id)
                         //}
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -1152,7 +1156,7 @@ fn exactly_one_row(
             // TODO: 3) a Select box that has a Foreach that meets the
             //    exactly_one_tuple condition and it is fully joined with the
             //    remaining Foreach quantifiers via equality predicates with one
-            //    of its unique keys.
+            //    of its unique keys./
         }
         BoxType::OuterJoin(_) => {
             // 4) an OuterJoin box whose PreservedForeach quantifier meets the
@@ -1274,20 +1278,22 @@ fn at_most_one_row(
             BoxType::OuterJoin(outer_join) => {
                 // 4) OuterJoin box where both the preserving side and the non-preserving
                 // side meet the one_tuple_at_most condition.
-                if b.quantifiers
-                    .iter()
-                    .filter(|q_id| *q_id != preserved_q_id)
-                    .all(|q_id| {
-                        let q = model.get_quantifier(*q_id);
-                        at_most_one_row(
-                            model,
-                            q.input_box,
-                            exactly_one_row_boxes,
-                            at_most_one_row_boxes,
-                        );
-                        at_most_one_row_boxes[&q.input_box]
-                    })
-                {
+                if b.quantifiers.iter().all(|q_id| {
+                    let q = model.get_quantifier(*q_id);
+                    at_most_one_row(
+                        model,
+                        q.input_box,
+                        exactly_one_row_boxes,
+                        at_most_one_row_boxes,
+                    );
+                    at_most_one_row_boxes[&q.input_box]
+                }) {
+                    result = true;
+                }
+            }
+            BoxType::Values(values) => {
+                // 5) A Values box with at most one row.
+                if values.rows.len() <= 1 {
                     result = true;
                 }
             }

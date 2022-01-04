@@ -59,12 +59,11 @@ impl FromHir {
 
     /// Generates a sub-graph representing the given expression.
     fn generate_internal(&mut self, expr: HirRelationExpr) -> BoxId {
-        match expr {
+        let result = match expr {
             HirRelationExpr::Get { id, mut typ } => {
                 if let Some(box_id) = self.gets_seen.get(&id) {
-                    return *box_id;
-                }
-                if let expr::Id::Global(id) = id {
+                    *box_id
+                } else if let expr::Id::Global(id) = id {
                     let result = self.model.make_box(BoxType::Get(Get { id }));
                     let mut b = self.model.get_mut_box(result);
                     self.gets_seen.insert(expr::Id::Global(id), result);
@@ -192,7 +191,7 @@ impl FromHir {
                     });
                     // Add it to the grouping key and to the projection of the
                     // Grouping box
-                    key.push(Box::new(select_box_col_ref.clone()));
+                    key.push(select_box_col_ref.clone());
                     self.model
                         .get_mut_box(group_box_id)
                         .add_column(select_box_col_ref);
@@ -312,7 +311,9 @@ impl FromHir {
             }
 
             _ => panic!("unsupported expression type {:?}", expr),
-        }
+        };
+        self.model.update_computed_properties(result);
+        result
     }
 
     /// Returns a Select box ranging over the given box, projecting
@@ -440,8 +441,8 @@ impl FromHir {
     fn add_predicate(&mut self, box_id: BoxId, predicate: BoxScalarExpr) {
         let mut the_box = self.model.get_mut_box(box_id);
         match &mut the_box.box_type {
-            BoxType::Select(select) => select.predicates.push(Box::new(predicate)),
-            BoxType::OuterJoin(outer_join) => outer_join.predicates.push(Box::new(predicate)),
+            BoxType::Select(select) => select.predicates.push(predicate),
+            BoxType::OuterJoin(outer_join) => outer_join.predicates.push(predicate),
             _ => unreachable!(),
         }
     }

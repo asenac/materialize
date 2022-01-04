@@ -290,43 +290,18 @@ impl MirRelationExpr {
         match self {
             MirRelationExpr::Constant { rows, typ } => {
                 if let Ok(rows) = rows {
-                    let n_cols = typ.arity();
-                    // If the `i`th entry is `Some`, then we have not yet observed non-uniqueness in the `i`th column.
-                    let mut unique_values_per_col = vec![Some(HashSet::<Datum>::default()); n_cols];
-                    for (row, diff) in rows {
-                        for (i, (datum, column_typ)) in
-                            row.iter().zip(typ.column_types.iter()).enumerate()
-                        {
-                            // If the record will be observed, we should validate its type.
-                            if datum != Datum::Dummy {
-                                assert!(
-                                    datum.is_instance_of(column_typ),
-                                    "Expected datum of type {:?}, got value {:?}",
-                                    column_typ,
-                                    datum
-                                );
-                                if let Some(unique_vals) = &mut unique_values_per_col[i] {
-                                    let is_dupe = *diff != 1 || !unique_vals.insert(datum);
-                                    if is_dupe {
-                                        unique_values_per_col[i] = None;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if rows.len() == 0 || (rows.len() == 1 && rows[0].1 == 1) {
-                        RelationType::new(typ.column_types.clone()).with_key(vec![])
-                    } else {
-                        // XXX - Multi-column keys are not detected.
-                        typ.clone().with_keys(
-                            unique_values_per_col
-                                .into_iter()
-                                .enumerate()
-                                .filter(|(_idx, unique_vals)| unique_vals.is_some())
-                                .map(|(idx, _)| vec![idx])
-                                .collect(),
-                        )
-                    }
+                    RelationType::new(typ.column_types.clone()).with_keys(
+                        find_unique_keys_in_constant(
+                            rows.iter().flat_map(|(row, diff)| {
+                                row.iter()
+                                    .zip(typ.column_types.iter())
+                                    .enumerate()
+                                    .map(|(i, (datum, column_typ))| (*diff, datum, i, column_typ))
+                            }),
+                            &typ.keys,
+                            typ.arity(),
+                        ),
+                    )
                 } else {
                     typ.clone()
                 }
@@ -580,33 +555,13 @@ impl MirRelationExpr {
                     column_types.push(agg.typ(input_typ));
                 }
                 let mut result = RelationType::new(column_types);
-                // The group key should form a key, but we might already have
-                // keys that are subsets of the group key, and should retain
-                // those instead, if so.
-                let mut keys = Vec::new();
-                for key in input_typ.keys.iter() {
-                    if key
-                        .iter()
-                        .all(|k| group_key.contains(&MirScalarExpr::Column(*k)))
-                    {
-                        keys.push(
-                            key.iter()
-                                .map(|i| {
-                                    group_key
-                                        .iter()
-                                        .position(|k| k == &MirScalarExpr::Column(*i))
-                                        .unwrap()
-                                })
-                                .collect::<Vec<_>>(),
-                        );
-                    }
-                }
-                if keys.is_empty() {
-                    keys.push((0..group_key.len()).collect());
-                }
-                for key in keys {
-                    result = result.with_key(key);
-                }
+                let keys = find_unique_keys_in_reduce(
+                    &input_typ.keys,
+                    group_key,
+                    |i| MirScalarExpr::Column(i),
+                    |expr| group_key.iter().position(|k| k == expr),
+                );
+                result = result.with_keys(keys);
                 result
             }
             MirRelationExpr::TopK {
@@ -2184,4 +2139,94 @@ where
         }
     }
     tiebreaker()
+}
+
+/// Find unique keys amongst rows of a constant.
+///
+/// `datums` should contain all datums contained amongst the rows of the
+/// constant in the format
+/// (copies of datum, the datum itself, column number of the datum, type)
+pub fn find_unique_keys_in_constant<'a, I>(
+    datums: I,
+    existing_keys: &Vec<Vec<usize>>,
+    n_cols: usize,
+) -> Vec<Vec<usize>>
+where
+    I: IntoIterator<Item = (isize, Datum<'a>, usize, &'a ColumnType)>,
+{
+    let mut total_rows = 0;
+    // If the `i`th entry is `Some`, then we have not yet observed non-uniqueness in the `i`th column.
+    let mut unique_values_per_col = vec![Some(HashSet::<Datum>::default()); n_cols];
+    for (diff, datum, i, column_typ) in datums {
+        // If the record will be observed, we should validate its type.
+        if datum != Datum::Dummy {
+            assert!(
+                datum.is_instance_of(column_typ),
+                "Expected datum of type {:?}, got value {:?}",
+                column_typ,
+                datum
+            );
+            if let Some(unique_vals) = &mut unique_values_per_col[i] {
+                let is_dupe = diff != 1 || !unique_vals.insert(datum);
+                if is_dupe {
+                    unique_values_per_col[i] = None;
+                }
+            }
+        }
+        if i == 0 {
+            total_rows += diff;
+        }
+    }
+    if total_rows <= 1 {
+        vec![]
+    } else {
+        existing_keys
+            .iter()
+            .cloned()
+            .chain(
+                unique_values_per_col
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_idx, unique_vals)| unique_vals.is_some())
+                    .map(|(idx, _)| vec![idx]),
+            )
+            .collect()
+    }
+}
+
+///
+pub fn find_unique_keys_in_reduce<E, F, G>(
+    input_unique_keys: &Vec<Vec<usize>>,
+    group_key: &[E],
+    usize_to_column: F,
+    position_in_projected_group_key: G,
+) -> Vec<Vec<usize>>
+where
+    E: Eq,
+    F: Fn(usize) -> E,
+    G: Fn(&E) -> Option<usize>,
+{
+    // The group key should form a key, but we might already have
+    // keys that are subsets of the group key, and should retain
+    // those instead, if so.
+    let mut keys = Vec::new();
+    for key in input_unique_keys.iter() {
+        let permuted_key = key
+            .iter()
+            .filter_map(|i| position_in_projected_group_key(&usize_to_column(*i)))
+            .collect::<Vec<_>>();
+        if permuted_key.len() == key.len() {
+            keys.push(permuted_key);
+        }
+    }
+    if keys.is_empty() {
+        let permuted_group_key = group_key
+            .iter()
+            .filter_map(|k| position_in_projected_group_key(k))
+            .collect::<Vec<_>>();
+        if permuted_group_key.len() == group_key.len() {
+            keys.push(permuted_group_key);
+        }
+    }
+    keys
 }

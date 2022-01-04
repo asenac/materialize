@@ -21,13 +21,24 @@ pub enum RuleType {
     TopBoxOnly,
     PreOrder,
     PostOrder,
+    /// Should be applied to all boxes, but does not have a preferred traversal
+    /// order.
+    AllBoxes,
 }
 
 /// Trait for rewrite rules
+///
+/// State stored in an object implementing this trait by [Rule::condition]
+/// can be carried over to the [Rule::action] call immediately after.
+///
+/// State should not be stored in an object to be carried over between different
+/// boxes or different calls to the same box.
 pub trait Rule {
     fn name(&self) -> &'static str;
 
-    fn rule_type(&self) -> RuleType;
+    fn rule_type() -> RuleType
+    where
+        Self: Sized;
 
     /// Whether the action should be fired for the given box.
     /// This method is not allowed to modify the model in any way.
@@ -37,22 +48,40 @@ pub trait Rule {
     fn action(&mut self, model: &mut Model, box_id: BoxId);
 }
 
+/// Generates blank instances of a rule.
+#[allow(missing_debug_implementations)]
+pub struct RuleGenerator {
+    pub typ: RuleType,
+    /// Function that creates a blank instance of the rule.
+    pub generate: Box<dyn Fn() -> Box<dyn Rule>>,
+}
+
+/// Create a RuleGenerator that generates blank instances of `R`.
+pub fn make_generator<R: 'static + Rule + Default>() -> RuleGenerator {
+    RuleGenerator {
+        typ: R::rule_type(),
+        generate: Box::new(|| Box::new(R::default())),
+    }
+}
+
 /// Entry-point of the normalization stage.
 pub fn rewrite_model(model: &mut Model) {
-    let mut fixup_rules: Vec<Box<dyn Rule>> = vec![Box::new(Windowing::new())];
+    let mut fixup_rules: Vec<RuleGenerator> = vec![make_generator::<Windowing>()];
     apply_rules_to_model(model, &mut fixup_rules);
     model.garbage_collect();
 
-    let mut rules: Vec<Box<dyn Rule>> = vec![
-        Box::new(ColumnRemoval::new()),
-        Box::new(SelectMerge::new()),
-        Box::new(ConstantLifting::new()),
-        Box::new(WindowingToSelect::new()),
+    let mut rules: Vec<RuleGenerator> = vec![
+        //make_generator::<ColumnRemoval>(),
+        make_generator::<SelectMerge>(),
+        make_generator::<ConstantLifting>(),
+        make_generator::<WindowingToSelect>(),
+        make_generator::<GroupingToDistinct>(),
+        make_generator::<ScalarToForeach>(),
     ];
     apply_rules_to_model(model, &mut rules);
     model.garbage_collect();
 
-    let mut decorrelation_rules: Vec<Box<dyn Rule>> = vec![Box::new(Decorrelation::new())];
+    let mut decorrelation_rules: Vec<RuleGenerator> = vec![make_generator::<Decorrelation>()];
 
     apply_rules_to_model(model, &mut decorrelation_rules);
     model.garbage_collect();
@@ -61,21 +90,21 @@ pub fn rewrite_model(model: &mut Model) {
 }
 
 /// Transform the model by applying a list of rewrite rules.
-pub fn apply_rules_to_model(model: &mut Model, rules: &mut Vec<Box<dyn Rule>>) {
+pub fn apply_rules_to_model(model: &mut Model, rules: &mut Vec<RuleGenerator>) {
     for rule in rules
         .iter_mut()
-        .filter(|r| matches!(r.rule_type(), RuleType::TopBoxOnly))
+        .filter(|r| matches!(r.typ, RuleType::TopBoxOnly))
     {
-        apply_rule(&mut **rule, model, model.top_box);
+        apply_rule(&mut *(*rule.generate)(), model, model.top_box);
     }
 
     deep_apply_rules(rules, model, model.top_box, &mut HashSet::new());
 
     for rule in rules
         .iter_mut()
-        .filter(|r| matches!(r.rule_type(), RuleType::TopBoxOnly))
+        .filter(|r| matches!(r.typ, RuleType::TopBoxOnly))
     {
-        apply_rule(&mut **rule, model, model.top_box);
+        apply_rule(&mut *(*rule.generate)(), model, model.top_box);
     }
 }
 
@@ -83,6 +112,7 @@ pub fn apply_rules_to_model(model: &mut Model, rules: &mut Vec<Box<dyn Rule>>) {
 fn apply_rule(rule: &mut dyn Rule, model: &mut Model, box_id: BoxId) {
     if rule.condition(model, box_id) {
         rule.action(model, box_id);
+        model.update_computed_properties(box_id);
         println!(
             "{}",
             crate::query_model::dot::DotGenerator::new()
@@ -96,7 +126,7 @@ fn apply_rule(rule: &mut dyn Rule, model: &mut Model, box_id: BoxId) {
 /// the subgraph starting in the given box. `visited_boxes` keeps track of all the
 /// visited boxes so far, to avoid visiting them again.
 fn deep_apply_rules(
-    rules: &mut Vec<Box<dyn Rule>>,
+    rules: &mut Vec<RuleGenerator>,
     model: &mut Model,
     box_id: BoxId,
     visited_boxes: &mut HashSet<BoxId>,
@@ -104,9 +134,9 @@ fn deep_apply_rules(
     if visited_boxes.insert(box_id) {
         for rule in rules
             .iter_mut()
-            .filter(|r| matches!(r.rule_type(), RuleType::PreOrder))
+            .filter(|r| matches!(r.typ, RuleType::PreOrder))
         {
-            apply_rule(&mut **rule, model, box_id);
+            apply_rule(&mut *(*rule.generate)(), model, box_id);
         }
 
         let quantifiers = model.get_box(box_id).quantifiers.clone();
@@ -117,25 +147,17 @@ fn deep_apply_rules(
 
         for rule in rules
             .iter_mut()
-            .filter(|r| matches!(r.rule_type(), RuleType::PostOrder))
+            .filter(|r| matches!(r.typ, RuleType::PostOrder | RuleType::AllBoxes))
         {
-            apply_rule(&mut **rule, model, box_id);
+            apply_rule(&mut *(*rule.generate)(), model, box_id);
         }
     }
 }
 
 /// Merges nested select boxes.
+#[derive(Default)]
 struct SelectMerge {
     to_merge: QuantifierSet,
-}
-
-impl SelectMerge {
-    fn new() -> Self {
-        Self {
-            /// Set of quantifiers to be removed from the current box
-            to_merge: BTreeSet::new(),
-        }
-    }
 }
 
 impl Rule for SelectMerge {
@@ -143,12 +165,11 @@ impl Rule for SelectMerge {
         "SelectMerge"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
     fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
-        self.to_merge.clear();
         let outer_box = model.get_box(box_id);
         if let BoxType::Select(_outer_select) = &outer_box.box_type {
             for q_id in outer_box.quantifiers.iter() {
@@ -227,20 +248,15 @@ impl Rule for SelectMerge {
 ///
 /// TODO(asenac) For unions, we can only lift a constant if all the branches
 /// project the same constant in the same position.
+#[derive(Default)]
 struct ConstantLifting {}
-
-impl ConstantLifting {
-    fn new() -> Self {
-        Self {}
-    }
-}
 
 impl Rule for ConstantLifting {
     fn name(&self) -> &'static str {
         "ConstantLifting"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
@@ -277,16 +293,9 @@ impl Rule for ConstantLifting {
     }
 }
 
+#[derive(Default)]
 struct ColumnRemoval {
     remap: HashMap<BoxId, HashMap<usize, usize>>,
-}
-
-impl ColumnRemoval {
-    fn new() -> Self {
-        Self {
-            remap: HashMap::new(),
-        }
-    }
 }
 
 impl Rule for ColumnRemoval {
@@ -294,12 +303,11 @@ impl Rule for ColumnRemoval {
         "ColumnRemoval"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::TopBoxOnly
     }
 
     fn condition(&mut self, model: &Model, top_box: BoxId) -> bool {
-        self.remap.clear();
         // used columns per box
         let mut used_columns = HashMap::new();
         for (_, b) in model.boxes.iter() {
@@ -399,6 +407,7 @@ impl Rule for ColumnRemoval {
 ///
 /// Note: a quantifier cannot be correlated with itself, that is called
 /// recursion instead.
+#[derive(Default)]
 struct Decorrelation {
     /// The correlation information of the quantifiers in the current box
     /// being evaluated.
@@ -415,12 +424,6 @@ type CacheEntry = (
 );
 
 impl Decorrelation {
-    fn new() -> Self {
-        Self {
-            correlation_info: BTreeMap::new(),
-        }
-    }
-
     /// Returns a decorrelated version of the input relation, ie. that is not correlated with
     /// any of the columns in the `column_map`.
     ///
@@ -499,7 +502,7 @@ impl Decorrelation {
                                 expr1: Box::new(left),
                                 expr2: Box::new(right),
                             };
-                            select_box.add_predicate(Box::new(cmp));
+                            select_box.add_predicate(cmp);
                         }
                     }
                     drop(select_box);
@@ -541,9 +544,7 @@ impl Decorrelation {
                         column_map
                             .iter()
                             .sorted_by_key(|(_, position)| **position)
-                            .map(|(col_ref, _)| {
-                                Box::new(BoxScalarExpr::ColumnReference(col_ref.clone()))
-                            }),
+                            .map(|(col_ref, _)| BoxScalarExpr::ColumnReference(col_ref.clone())),
                     );
                 }
 
@@ -736,7 +737,7 @@ impl Rule for Decorrelation {
         "Decorrelation"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
@@ -814,7 +815,7 @@ impl Rule for Decorrelation {
                     expr1: Box::new(BoxScalarExpr::ColumnReference(col_ref.clone())),
                     expr2: Box::new(right),
                 };
-                model.get_mut_box(box_id).add_predicate(Box::new(cmp));
+                model.get_mut_box(box_id).add_predicate(cmp);
             }
 
             non_correlated_quantifires.insert(quantifier_id);
@@ -826,21 +827,14 @@ impl Rule for Decorrelation {
 
         // Simplify the decorrelated box by fusing any redundant `Select` boxes, for example,
         // those added when the decorrelation logic is applied to a `Get` operator.
-        let mut rules: Vec<Box<dyn Rule>> = vec![Box::new(SelectMerge::new())];
+        let mut rules: Vec<RuleGenerator> = vec![make_generator::<SelectMerge>()];
         deep_apply_rules(&mut rules, model, box_id, &mut HashSet::new());
     }
 }
 
+#[derive(Default)]
 struct Windowing {
     to_pushdown: BTreeSet<BoxScalarExpr>,
-}
-
-impl Windowing {
-    fn new() -> Self {
-        Self {
-            to_pushdown: BTreeSet::new(),
-        }
-    }
 }
 
 impl Rule for Windowing {
@@ -848,12 +842,11 @@ impl Rule for Windowing {
         "Windowing"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
     fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
-        self.to_pushdown.clear();
         let b = model.get_box(box_id);
         if b.is_select() {
             let _ = b.visit_expressions(&mut |expr: &BoxScalarExpr| -> Result<(), ()> {
@@ -934,20 +927,15 @@ impl Rule for Windowing {
 
 /// Any windowing box not projecting the result of any windowing function can be converted
 /// into a regular Select box.
-struct WindowingToSelect {}
-
-impl WindowingToSelect {
-    fn new() -> Self {
-        Self {}
-    }
-}
+#[derive(Default)]
+struct WindowingToSelect;
 
 impl Rule for WindowingToSelect {
     fn name(&self) -> &'static str {
         "WindowingToSelect"
     }
 
-    fn rule_type(&self) -> RuleType {
+    fn rule_type() -> RuleType {
         RuleType::PostOrder
     }
 
@@ -966,4 +954,352 @@ impl Rule for WindowingToSelect {
         let mut b = model.get_mut_box(box_id);
         b.box_type = BoxType::Select(Select::new());
     }
+}
+
+/// A Grouping box without aggregations is a Select box with
+/// [DistinctOperation::Enforce]
+#[derive(Default)]
+struct GroupingToDistinct;
+
+impl Rule for GroupingToDistinct {
+    fn name(&self) -> &'static str {
+        "GroupingToDistinct"
+    }
+
+    fn rule_type() -> RuleType {
+        RuleType::AllBoxes
+    }
+
+    fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
+        let b = model.get_box(box_id);
+        if let BoxType::Grouping(_) = &b.box_type {
+            b.columns
+                .iter()
+                .all(|c| !matches!(c.expr, BoxScalarExpr::Aggregate { .. }))
+        } else {
+            false
+        }
+    }
+
+    fn action(&mut self, model: &mut Model, box_id: BoxId) {
+        // 1 Add a new select box
+        let new_select_id = model.make_select_box();
+
+        // 2 Move all quantifiers of this box down to the new select box.
+        model.swap_quantifiers(box_id, new_select_id);
+
+        // 5 Add a quantifier connecting this box to the new select box.
+        let new_quantifier = model.make_quantifier(QuantifierType::Foreach, new_select_id, box_id);
+
+        // 3 The new select box does a distinct on all of the grouping keys.
+        let mut new_select_box = model.get_mut_box(new_select_id);
+        new_select_box.distinct = DistinctOperation::Enforce;
+        let mut b = model.get_mut_box(box_id);
+        if let BoxType::Grouping(g) = &mut b.box_type {
+            for col in g.key.drain(..) {
+                new_select_box.add_column(col);
+            }
+        }
+
+        // 4 Change this box to a Select
+        b.box_type = BoxType::Select(Select::new());
+
+        // 6 Remap all the columns in the projection of this box to reference
+        // the new quantifier.
+        for col in b.columns.iter_mut() {
+            col.expr = BoxScalarExpr::ColumnReference(ColumnReference {
+                quantifier_id: new_quantifier,
+                position: new_select_box
+                    .columns
+                    .iter()
+                    .position(|c| c.expr == col.expr)
+                    .unwrap(),
+            });
+        }
+    }
+}
+
+/// Any Scalar quantifier whose input box that either:
+/// 1) produces at most one row AND has a predicate that discards null rows.
+/// 2) produces exactly one row.
+/// can be converted into a Foreach quantifier
+#[derive(Default)]
+struct ScalarToForeach {
+    /// Which quantifier ids from a box to convert.
+    /// Gets reset every time `condition` is called.
+    to_convert: HashSet<QuantifierId>,
+}
+
+impl Rule for ScalarToForeach {
+    fn name(&self) -> &'static str {
+        "ScalarToForeach"
+    }
+
+    fn rule_type() -> RuleType {
+        RuleType::PostOrder
+    }
+
+    fn condition(&mut self, model: &Model, box_id: BoxId) -> bool {
+        let b = model.get_box(box_id);
+
+        // Memoize boxes we have already seen.
+        let mut exactly_one_row_boxes = HashMap::new();
+        let mut at_most_one_row_boxes = HashMap::new();
+
+        self.to_convert.extend(
+            b.quantifiers
+                .iter()
+                // Find scalar quantifiers in the box ...
+                .filter_map(|q_id| {
+                    let q = model.get_quantifier(*q_id);
+                    if q.quantifier_type == QuantifierType::Scalar {
+                        Some((q_id, q.input_box))
+                    } else {
+                        None
+                    }
+                })
+                // that can be converted.
+                .filter_map(|(q_id, input_box_id)| {
+                    exactly_one_row(
+                        model,
+                        input_box_id,
+                        &mut exactly_one_row_boxes,
+                        &mut at_most_one_row_boxes,
+                    );
+                    if exactly_one_row_boxes[&input_box_id] {
+                        Some(q_id)
+                    } else if let Some(predicates) = b.get_predicates() {
+                        at_most_one_row(
+                            model,
+                            input_box_id,
+                            &mut exactly_one_row_boxes,
+                            &mut at_most_one_row_boxes,
+                        );
+                        if at_most_one_row_boxes[&input_box_id] {
+                            //if predicates.iter().any(|p| ) {
+                            Some(q_id)
+                        //}
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }),
+        );
+        !self.to_convert.is_empty()
+    }
+
+    fn action(&mut self, model: &mut Model, _box_id: BoxId) {
+        for q_id in &self.to_convert {
+            let mut q_mut = model.get_mut_quantifier(*q_id);
+            q_mut.quantifier_type = QuantifierType::Foreach;
+        }
+    }
+}
+
+/// Determines if box corresponding to `box_id` produces exactly one row.
+///
+/// Adds the result to `exactly_one_row_boxes`.
+///
+/// To save computation effort, the method will refer to information contained in
+/// `at_most_one_row_boxes` and `exactly_one_row_boxes`. Also, if the method
+/// finds out whether or not another box produces at most one row (resp.
+/// exactly one row), it will add that info to `at_most_one_row_boxes` (resp.
+/// `exactly_one_row_boxes`).
+fn exactly_one_row(
+    model: &Model,
+    box_id: BoxId,
+    exactly_one_row_boxes: &mut HashMap<BoxId, bool>,
+    at_most_one_row_boxes: &mut HashMap<BoxId, bool>,
+) {
+    if exactly_one_row_boxes.contains_key(&box_id) {
+        return;
+    }
+    let b = model.get_box(box_id);
+
+    let mut result = false;
+    // See if the box fulfills any of the conditions that would allow it to
+    // exactly one row.
+    match &b.box_type {
+        BoxType::Grouping(grouping) => {
+            // 1) a Grouping box with an empty grouping key
+            if grouping.key.is_empty() {
+                result = true;
+            }
+        }
+        BoxType::Select(select) => {
+            // 2) a Select box with no predicates whose Foreach quantifiers
+            // meet the exactly_one_tuple condition.
+            if select.predicates.is_empty()
+                && b.quantifiers
+                    .iter()
+                    .filter_map(|q_id| {
+                        let q = model.get_quantifier(*q_id);
+                        if q.quantifier_type == QuantifierType::Foreach {
+                            Some(q)
+                        } else {
+                            None
+                        }
+                    })
+                    .any(|q| {
+                        exactly_one_row(
+                            model,
+                            q.input_box,
+                            exactly_one_row_boxes,
+                            at_most_one_row_boxes,
+                        );
+                        exactly_one_row_boxes[&q.input_box]
+                    })
+            {
+                result = true;
+            }
+            // TODO: 3) a Select box that has a Foreach that meets the
+            //    exactly_one_tuple condition and it is fully joined with the
+            //    remaining Foreach quantifiers via equality predicates with one
+            //    of its unique keys./
+        }
+        BoxType::OuterJoin(_) => {
+            // 4) an OuterJoin box whose PreservedForeach quantifier meets the
+            // exactly_one_tuple condition and its Foreach side (the
+            // non-preserving side) meets at least the one_tuple_at_most
+            // condition.
+            if let Some(preserved_q_id) = b.quantifiers.iter().find(|q_id| {
+                let q = model.get_quantifier(**q_id);
+                exactly_one_row(
+                    model,
+                    q.input_box,
+                    exactly_one_row_boxes,
+                    at_most_one_row_boxes,
+                );
+                q.quantifier_type == QuantifierType::PreservedForeach
+                    && exactly_one_row_boxes[&q.input_box]
+            }) {
+                if b.quantifiers
+                    .iter()
+                    .filter(|q_id| *q_id != preserved_q_id)
+                    .all(|q_id| {
+                        let q = model.get_quantifier(*q_id);
+                        at_most_one_row(
+                            model,
+                            q.input_box,
+                            exactly_one_row_boxes,
+                            at_most_one_row_boxes,
+                        );
+                        at_most_one_row_boxes[&q.input_box]
+                    })
+                {
+                    result = true;
+                }
+            }
+        }
+        BoxType::Values(values) => {
+            // 5) A Values box with one row.
+            if values.rows.len() == 1 {
+                result = true;
+            }
+        }
+        _ => {}
+    }
+    exactly_one_row_boxes.insert(box_id, result);
+}
+
+/// Determines if box corresponding to `box_id` produces at most one row.
+///
+/// Adds the result to `at_most_one_row_boxes`.
+///
+/// Note that this function calls [exactly_one_row].
+///
+/// To save computation effort, the function will refer to information contained in
+/// `at_most_one_row_boxes` and `exactly_one_row_boxes`. Also, if the function
+/// finds out whether or not another box produces at most one row (resp.
+/// exactly one row), it will add that info to `at_most_one_row_boxes` (resp.
+/// `exactly_one_row_boxes`).
+fn at_most_one_row(
+    model: &Model,
+    box_id: BoxId,
+    exactly_one_row_boxes: &mut HashMap<BoxId, bool>,
+    at_most_one_row_boxes: &mut HashMap<BoxId, bool>,
+) {
+    if at_most_one_row_boxes.contains_key(&box_id) {
+        return;
+    }
+
+    let mut result = false;
+    exactly_one_row(model, box_id, exactly_one_row_boxes, at_most_one_row_boxes);
+    if let Some(true) = exactly_one_row_boxes.get(&box_id) {
+        // 1) exactly_one_row returns true
+        result = true;
+    } else {
+        let b = model.get_box(box_id);
+
+        match &b.box_type {
+            BoxType::Select(_) => {
+                // 2) a Select box whose Foreach quantifiers meet the one_tuple_at_most
+                //    condition (regardless of whether  it contains any predicates),
+                if b.quantifiers
+                    .iter()
+                    .filter_map(|q_id| {
+                        let q = model.get_quantifier(*q_id);
+                        if q.quantifier_type == QuantifierType::Foreach {
+                            Some(q)
+                        } else {
+                            None
+                        }
+                    })
+                    .any(|q| {
+                        at_most_one_row(
+                            model,
+                            q.input_box,
+                            exactly_one_row_boxes,
+                            at_most_one_row_boxes,
+                        );
+                        at_most_one_row_boxes[&q.input_box]
+                    })
+                {
+                    result = true;
+                }
+            }
+            BoxType::Grouping(_) => {
+                // 3) a Grouping box whose input quantifier meets the one_tuple_at_most
+                //    condition,
+                if b.quantifiers.iter().all(|q_id| {
+                    let q = model.get_quantifier(*q_id);
+                    at_most_one_row(
+                        model,
+                        q.input_box,
+                        exactly_one_row_boxes,
+                        at_most_one_row_boxes,
+                    );
+                    at_most_one_row_boxes[&q.input_box]
+                }) {
+                    result = true;
+                }
+            }
+            BoxType::OuterJoin(outer_join) => {
+                // 4) OuterJoin box where both the preserving side and the non-preserving
+                // side meet the one_tuple_at_most condition.
+                if b.quantifiers.iter().all(|q_id| {
+                    let q = model.get_quantifier(*q_id);
+                    at_most_one_row(
+                        model,
+                        q.input_box,
+                        exactly_one_row_boxes,
+                        at_most_one_row_boxes,
+                    );
+                    at_most_one_row_boxes[&q.input_box]
+                }) {
+                    result = true;
+                }
+            }
+            BoxType::Values(values) => {
+                // 5) A Values box with at most one row.
+                if values.rows.len() <= 1 {
+                    result = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    at_most_one_row_boxes.insert(box_id, result);
 }

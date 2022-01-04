@@ -59,12 +59,11 @@ impl FromHir {
 
     /// Generates a sub-graph representing the given expression.
     fn generate_internal(&mut self, expr: HirRelationExpr) -> BoxId {
-        match expr {
+        let result = match expr {
             HirRelationExpr::Get { id, mut typ } => {
                 if let Some(box_id) = self.gets_seen.get(&id) {
-                    return *box_id;
-                }
-                if let expr::Id::Global(id) = id {
+                    *box_id
+                } else if let expr::Id::Global(id) = id {
                     let result = self.model.make_box(BoxType::Get(Get { id }));
                     let mut b = self.model.get_mut_box(result);
                     self.gets_seen.insert(expr::Id::Global(id), result);
@@ -312,7 +311,9 @@ impl FromHir {
             }
 
             _ => panic!("unsupported expression type {:?}", expr),
-        }
+        };
+        self.model.update_computed_properties(result);
+        result
     }
 
     /// Returns a Select box ranging over the given box, projecting

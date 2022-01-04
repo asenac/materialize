@@ -112,6 +112,7 @@ pub fn apply_rules_to_model(model: &mut Model, rules: &mut Vec<RuleGenerator>) {
 fn apply_rule(rule: &mut dyn Rule, model: &mut Model, box_id: BoxId) {
     if rule.condition(model, box_id) {
         rule.action(model, box_id);
+        model.update_computed_properties(box_id);
         println!(
             "{}",
             crate::query_model::dot::DotGenerator::new()
@@ -1075,7 +1076,7 @@ impl Rule for ScalarToForeach {
                             &mut at_most_one_row_boxes,
                         );
                         if at_most_one_row_boxes[&input_box_id] {
-                        //if predicates.iter().any(|p| ) {
+                            //if predicates.iter().any(|p| ) {
                             Some(q_id)
                         //}
                         } else {

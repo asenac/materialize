@@ -197,7 +197,7 @@ pub struct Grouping {
 /// The content of a OuterJoin box.
 #[derive(Debug, Default, Clone)]
 pub struct OuterJoin {
-    /// The predices in the ON clause of the outer join.
+    /// The predicates in the ON clause of the outer join.
     pub predicates: Vec<BoxScalarExpr>,
 }
 
@@ -514,6 +514,79 @@ impl Model {
             .collect();
 
         self.top_box = *box_map.get(&self.top_box).unwrap();
+    }
+
+    /// Update properties, such as the unique keys of a box.
+    fn update_computed_properties(&mut self, box_id: BoxId) {
+        let mut b = self.get_mut_box(box_id);
+        match &b.box_type {
+            BoxType::Select(Select {
+                limit,
+                offset,
+                order_key,
+                predicates,
+            }) => {
+                // 1) Check that limit - offset is one or less.
+                // 2) For each quantifier,
+                // a) Check whether mappings preserve uniqueness.
+                // b) Check whether the predicate reduces the number of rows
+                //    down to zero or one.
+                // 3) Check which unique key groups are retained after the join.
+                // 4) Eliminate unique key groups that are not part of the projection.
+            }
+            BoxType::Grouping(grouping) => {
+                let mut keys = Vec::new();
+                for q_id in &b.quantifiers {
+                    let q = self.get_quantifier(*q_id);
+                    keys.append(&mut expr::find_unique_keys_in_reduce(
+                        &self.get_box(q.input_box).unique_keys,
+                        &grouping.key,
+                        |i| {
+                            BoxScalarExpr::ColumnReference(ColumnReference {
+                                quantifier_id: *q_id,
+                                position: i,
+                            })
+                        },
+                        |expr| {
+                            if grouping.key.contains(expr) {
+                                b.columns.iter().position(|c| &c.expr == expr)
+                            } else {
+                                None
+                            }
+                        },
+                    ));
+                }
+                b.unique_keys = keys;
+            }
+            BoxType::OuterJoin(_) => {
+                // Do latter two steps of the select box.
+            }
+            BoxType::Values(values) => {
+                if values.rows.is_empty() {
+                    b.unique_keys = vec![vec![]];
+                } else {
+                    let first_row = values.rows.first().unwrap().clone();
+                    let n_cols = first_row.len();
+                    let unique_keys = expr::find_unique_keys_in_constant(
+                        values.rows.iter().flat_map(|row| {
+                            row.iter().enumerate().filter_map(|(i, expr)| {
+                                if let BoxScalarExpr::Literal(col, typ) = expr {
+                                    Some((1, col.unpack_first(), i, typ))
+                                } else {
+                                    None
+                                }
+                            })
+                        }),
+                        &b.unique_keys,
+                        n_cols,
+                    );
+                    b.unique_keys = unique_keys;
+                }
+            }
+            // Do nothing because unique keys of a base source/view cannot be altered.
+            BoxType::Get(get) => {}
+            _ => unimplemented!(),
+        }
     }
 }
 

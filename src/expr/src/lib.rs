@@ -38,8 +38,8 @@ pub use relation::func::{AggregateFunc, TableFunc};
 pub use relation::func::{AnalyzedRegex, CaptureGroupDesc};
 pub use relation::join_input_mapper::JoinInputMapper;
 pub use relation::{
-    compare_columns, AggregateExpr, ColumnOrder, JoinImplementation, MirRelationExpr,
-    RowSetFinishing, RECURSION_LIMIT,
+    compare_columns, find_unique_keys_in_constant, find_unique_keys_in_reduce, AggregateExpr,
+    ColumnOrder, JoinImplementation, MirRelationExpr, RowSetFinishing, RECURSION_LIMIT,
 };
 pub use scalar::func::{self, BinaryFunc, NullaryFunc, UnaryFunc, VariadicFunc};
 pub use scalar::{like_pattern, EvalError, MirScalarExpr};
